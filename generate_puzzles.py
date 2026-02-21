@@ -225,15 +225,15 @@ def generate_one(
 
             return data
 
-        except anthropic.APIConnectionError as e:
-            print(f"  Connection error: {e} (attempt {attempt}).", flush=True)
-            time.sleep(2 ** attempt)
         except anthropic.RateLimitError as e:
             wait = 2 ** (attempt + 2)
             print(f"  Rate limited, waiting {wait}s... (attempt {attempt}).", flush=True)
             time.sleep(wait)
         except anthropic.APIStatusError as e:
             print(f"  API error {e.status_code}: {e.message} (attempt {attempt}).", flush=True)
+            time.sleep(2 ** attempt)
+        except Exception as e:
+            print(f"  {type(e).__name__}: {e} (attempt {attempt}).", flush=True)
             time.sleep(2 ** attempt)
 
     return None
