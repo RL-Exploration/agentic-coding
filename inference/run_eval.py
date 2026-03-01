@@ -4,15 +4,17 @@
 Single inference run (Run 1 from eval_plan.md): generate k rollouts per puzzle,
 execute against unit tests, then compute all aggregation views offline.
 
+Uses HuggingFace transformers model.generate() directly (no vLLM dependency).
+
 Usage:
     # Full run (inference + tests + analytics)
-    python run_eval.py --api-base http://localhost:8000/v1
+    python run_eval.py
 
     # Re-run analytics on existing results
     python run_eval.py --analyze eval_results/raw_rollouts.jsonl
 
     # Custom sampling
-    python run_eval.py --api-base http://localhost:8000/v1 --samples 8 --timeout 30
+    python run_eval.py --samples 8 --timeout 30
 """
 
 from __future__ import annotations
@@ -27,13 +29,10 @@ import sys
 import tempfile
 import time
 from collections import defaultdict
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any
-
-from openai import OpenAI
 
 # ---------------------------------------------------------------------------
 # Puzzle catalog (from concept_map.md)
@@ -333,22 +332,60 @@ def build_rollout(puzzle: dict, idx: int, code: str, timeout: int) -> Rollout:
 
 
 # ---------------------------------------------------------------------------
-# Inference
+# Model loading & inference (HuggingFace transformers)
 # ---------------------------------------------------------------------------
 
-def generate_solution(client: OpenAI, model: str, prompt: str,
-                      starter_code: str, temperature: float = 0.7) -> str:
-    user_msg = f"{prompt}\n\nComplete this function:\n\n{starter_code}"
-    resp = client.chat.completions.create(
-        model=model,
-        messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": user_msg},
-        ],
-        temperature=temperature,
-        max_tokens=2048,
+def load_model(model_name: str, device: str = "auto"):
+    """Load model and tokenizer. Returns (model, tokenizer)."""
+    import torch
+    from transformers import AutoModelForCausalLM, AutoTokenizer
+
+    print(f"Loading model: {model_name}")
+    tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+    model = AutoModelForCausalLM.from_pretrained(
+        model_name,
+        torch_dtype=torch.float16,
+        device_map=device,
+        trust_remote_code=True,
     )
-    return resp.choices[0].message.content or ""
+    model.eval()
+    print(f"Model loaded on {model.device}\n")
+    return model, tokenizer
+
+
+def generate_solutions(model, tokenizer, prompt: str, starter_code: str,
+                       num_samples: int = 8, temperature: float = 0.7,
+                       max_new_tokens: int = 2048) -> list[str]:
+    """Generate num_samples solutions in a single batched call."""
+    import torch
+
+    user_msg = f"{prompt}\n\nComplete this function:\n\n{starter_code}"
+    messages = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content": user_msg},
+    ]
+    text = tokenizer.apply_chat_template(
+        messages, tokenize=False, add_generation_prompt=True,
+    )
+    inputs = tokenizer(text, return_tensors="pt").to(model.device)
+
+    with torch.no_grad():
+        outputs = model.generate(
+            **inputs,
+            max_new_tokens=max_new_tokens,
+            temperature=temperature,
+            top_p=0.95,
+            do_sample=True,
+            num_return_sequences=num_samples,
+            pad_token_id=tokenizer.eos_token_id,
+        )
+
+    input_len = inputs["input_ids"].shape[1]
+    results: list[str] = []
+    for seq in outputs:
+        decoded = tokenizer.decode(seq[input_len:], skip_special_tokens=True)
+        results.append(decoded)
+    return results
 
 
 # ---------------------------------------------------------------------------
@@ -374,11 +411,10 @@ def load_puzzles(puzzle_dir: str) -> list[dict]:
 
 def run_eval(
     puzzles: list[dict],
-    client: OpenAI,
-    model: str,
+    model,
+    tokenizer,
     num_samples: int = 8,
     timeout: int = 30,
-    max_workers: int = 4,
     temperature: float = 0.7,
 ) -> list[Rollout]:
     all_rollouts: list[Rollout] = []
@@ -390,17 +426,14 @@ def run_eval(
         fam = PUZZLE_META.get(puzzle["_num"], {}).get("skill_family", "?")
         print(f"[{i+1}/{total}] {pid} ({diff}, {fam})", flush=True)
 
-        raw_responses: list[str] = []
-        def _gen(_j: int) -> str:
-            return generate_solution(client, model, puzzle["prompt"],
-                                     puzzle["starter_code"], temperature)
-        with ThreadPoolExecutor(max_workers=max_workers) as pool:
-            futs = {pool.submit(_gen, j): j for j in range(num_samples)}
-            for fut in as_completed(futs):
-                try:
-                    raw_responses.append(fut.result())
-                except Exception as e:
-                    raw_responses.append(f"# API ERROR: {e}")
+        try:
+            raw_responses = generate_solutions(
+                model, tokenizer, puzzle["prompt"], puzzle["starter_code"],
+                num_samples=num_samples, temperature=temperature,
+            )
+        except Exception as e:
+            print(f"  Generation error: {e}", flush=True)
+            raw_responses = [f"# GENERATION ERROR: {e}"] * num_samples
 
         puzzle_rollouts: list[Rollout] = []
         for j, raw in enumerate(raw_responses):
@@ -819,11 +852,10 @@ def load_rollouts(path: str) -> list[Rollout]:
 
 def main():
     parser = argparse.ArgumentParser(description="RL Coding Puzzle Evaluation")
-    parser.add_argument("--api-base", default="http://localhost:8000/v1",
-                        help="OpenAI-compatible API base URL")
-    parser.add_argument("--api-key", default="not-needed",
-                        help="API key (default: not-needed for local vLLM)")
-    parser.add_argument("--model", default="Qwen/Qwen2.5-Coder-1.5B-Instruct")
+    parser.add_argument("--model", default="Qwen/Qwen2.5-Coder-1.5B-Instruct",
+                        help="HuggingFace model ID (default: Qwen/Qwen2.5-Coder-1.5B-Instruct)")
+    parser.add_argument("--device", default="auto",
+                        help="Device map for model loading (default: auto)")
     parser.add_argument("--puzzle-dir", default=None,
                         help="Puzzle directory (default: ../puzzles)")
     parser.add_argument("--samples", type=int, default=8,
@@ -831,8 +863,6 @@ def main():
     parser.add_argument("--timeout", type=int, default=30,
                         help="Test execution timeout in seconds (default: 30)")
     parser.add_argument("--temperature", type=float, default=0.7)
-    parser.add_argument("--max-workers", type=int, default=4,
-                        help="Parallel API requests per puzzle (default: 4)")
     parser.add_argument("--output-dir", default=None,
                         help="Output directory (default: ../eval_results)")
     parser.add_argument("--analyze", metavar="ROLLOUTS_JSONL",
@@ -856,15 +886,15 @@ def main():
             print(f"No puzzles found in {puzzle_dir}")
             sys.exit(1)
         print(f"Loaded {len(puzzles)} puzzles from {puzzle_dir}")
-        print(f"Model: {args.model}  |  API: {args.api_base}")
+        print(f"Model: {args.model}")
         print(f"Samples: {k}  |  Temperature: {args.temperature}  |  Timeout: {args.timeout}s")
         print()
 
-        client = OpenAI(base_url=args.api_base, api_key=args.api_key)
+        model, tokenizer = load_model(args.model, device=args.device)
         rollouts = run_eval(
-            puzzles, client, args.model,
+            puzzles, model, tokenizer,
             num_samples=k, timeout=args.timeout,
-            max_workers=args.max_workers, temperature=args.temperature,
+            temperature=args.temperature,
         )
 
     views = compute_views(rollouts, k)

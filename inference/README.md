@@ -1,19 +1,16 @@
 # Inference & Evaluation
 
-Serves Qwen2.5-Coder-1.5B-Instruct via vLLM and runs the evaluation pipeline
-from `eval_plan.md` against all 50 coding puzzles.
+Loads Qwen2.5-Coder-1.5B-Instruct directly via HuggingFace transformers (`model.generate()`)
+and runs the evaluation pipeline from `eval_plan.md` against all 50 coding puzzles.
 
-## Quick Start (Local)
+## Quick Start (Local / Lightning AI)
 
 ```bash
 # 1. Install dependencies (needs a CUDA GPU)
 pip install -r requirements.txt
 
-# 2. Start the inference server (runs on port 8000)
-python server.py
-
-# 3. In another terminal, run the evaluation
-python run_eval.py --api-base http://localhost:8000/v1
+# 2. Run the evaluation (loads model + runs all puzzles)
+python run_eval.py
 ```
 
 Results are saved to `../eval_results/`.
@@ -30,42 +27,38 @@ git clone <your-repo-url> && cd RL_Coding/inference
 # 3. Install dependencies
 pip install -r requirements.txt
 
-# 4. Start the server
-python server.py
-
-# 5. Open a second terminal in the Studio and run eval
-python run_eval.py --api-base http://localhost:8000/v1
+# 4. Run the full eval
+python run_eval.py
 ```
 
 ## CLI Reference
 
-### server.py
+### server.py (interactive testing)
 
 ```
-python server.py [--model MODEL] [--port PORT] [--max-model-len LEN]
+python server.py [--model MODEL] [--device DEVICE] [--temperature T]
 ```
 
 | Flag | Default | Description |
 |---|---|---|
 | `--model` | `Qwen/Qwen2.5-Coder-1.5B-Instruct` | HuggingFace model ID |
-| `--port` | `8000` | Server port |
-| `--max-model-len` | `4096` | Max sequence length |
-| `--gpu-memory-utilization` | `0.90` | Fraction of GPU memory to use |
+| `--device` | `auto` | Device map for model loading |
+| `--max-new-tokens` | `2048` | Max tokens to generate |
+| `--temperature` | `0.7` | Sampling temperature |
 
 ### run_eval.py
 
 ```
-python run_eval.py [--api-base URL] [--samples K] [--analyze ROLLOUTS_FILE]
+python run_eval.py [--model MODEL] [--samples K] [--analyze ROLLOUTS_FILE]
 ```
 
 | Flag | Default | Description |
 |---|---|---|
-| `--api-base` | `http://localhost:8000/v1` | OpenAI-compatible API endpoint |
-| `--model` | `Qwen/Qwen2.5-Coder-1.5B-Instruct` | Model name for the API |
+| `--model` | `Qwen/Qwen2.5-Coder-1.5B-Instruct` | HuggingFace model ID |
+| `--device` | `auto` | Device map for model loading |
 | `--samples` | `8` | Rollouts per puzzle (k for pass@k) |
 | `--timeout` | `30` | Test execution timeout (seconds) |
 | `--temperature` | `0.7` | Sampling temperature |
-| `--max-workers` | `4` | Parallel API requests per puzzle |
 | `--output-dir` | `../eval_results` | Where to save results |
 | `--analyze` | — | Re-run analytics on existing `raw_rollouts.jsonl` |
 
