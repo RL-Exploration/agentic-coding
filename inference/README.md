@@ -1,6 +1,6 @@
 # Inference & Evaluation
 
-Loads Qwen2.5-Coder-1.5B-Instruct directly via HuggingFace transformers (`model.generate()`)
+Loads Qwen2.5-Coder-14B-Instruct directly via HuggingFace transformers (`model.generate()`)
 and runs the evaluation pipeline from `eval_plan.md` against all 50 coding puzzles.
 
 ## Quick Start (Local / Lightning AI)
@@ -18,7 +18,7 @@ Results are saved to `../eval_results/`.
 ## Lightning AI Deployment
 
 ```bash
-# 1. Create a Lightning Studio with a GPU (L4 or T4 is sufficient for 1.5B)
+# 1. Create a Lightning Studio with a GPU (L40S, A100, or similar with >=28GB VRAM for 14B fp16)
 #    Go to https://lightning.ai → New Studio → Select GPU
 
 # 2. Clone the repo inside the Studio
@@ -41,7 +41,7 @@ python server.py [--model MODEL] [--device DEVICE] [--temperature T]
 
 | Flag | Default | Description |
 |---|---|---|
-| `--model` | `Qwen/Qwen2.5-Coder-1.5B-Instruct` | HuggingFace model ID |
+| `--model` | `Qwen/Qwen2.5-Coder-14B-Instruct` | HuggingFace model ID |
 | `--device` | `auto` | Device map for model loading |
 | `--max-new-tokens` | `2048` | Max tokens to generate |
 | `--temperature` | `0.7` | Sampling temperature |
@@ -54,7 +54,7 @@ python run_eval.py [--model MODEL] [--samples K] [--analyze ROLLOUTS_FILE]
 
 | Flag | Default | Description |
 |---|---|---|
-| `--model` | `Qwen/Qwen2.5-Coder-1.5B-Instruct` | HuggingFace model ID |
+| `--model` | `Qwen/Qwen2.5-Coder-14B-Instruct` | HuggingFace model ID |
 | `--device` | `auto` | Device map for model loading |
 | `--samples` | `8` | Rollouts per puzzle (k for pass@k) |
 | `--timeout` | `30` | Test execution timeout (seconds) |

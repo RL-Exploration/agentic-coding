@@ -852,8 +852,8 @@ def load_rollouts(path: str) -> list[Rollout]:
 
 def main():
     parser = argparse.ArgumentParser(description="RL Coding Puzzle Evaluation")
-    parser.add_argument("--model", default="Qwen/Qwen2.5-Coder-1.5B-Instruct",
-                        help="HuggingFace model ID (default: Qwen/Qwen2.5-Coder-1.5B-Instruct)")
+    parser.add_argument("--model", default="Qwen/Qwen2.5-Coder-14B-Instruct",
+                        help="HuggingFace model ID (default: Qwen/Qwen2.5-Coder-14B-Instruct)")
     parser.add_argument("--device", default="auto",
                         help="Device map for model loading (default: auto)")
     parser.add_argument("--puzzle-dir", default=None,
