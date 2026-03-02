@@ -153,6 +153,21 @@ CURATED_20 = [
     25, 26, 31, 36, 40, 44, 46, 57, 59, 69,
 ]
 
+CURATED_50 = sorted(CURATED_20 + [
+    # Strings: 0, 12, 56, 64, 80
+    0, 12, 56, 64, 80,
+    # Lists/Arrays: 3, 33, 37, 68, 70, 90
+    3, 33, 37, 68, 70, 90,
+    # Dicts/Sets: 43, 95, 111
+    43, 95, 111,
+    # Math: 4, 24, 49, 63, 75, 96
+    4, 24, 49, 63, 75, 96,
+    # Logic/Simulation: 47, 65, 67, 73, 93
+    47, 65, 67, 73, 93,
+    # Search/Sort: 55, 76, 99, 107, 116
+    55, 76, 99, 107, 116,
+])
+
 
 def main():
     parser = argparse.ArgumentParser(
@@ -164,6 +179,8 @@ def main():
                         help="Comma-separated HumanEval problem indices (e.g. '1,5,6,8')")
     parser.add_argument("--curated20", action="store_true",
                         help="Use curated 20-problem set balanced for 1.5B eval")
+    parser.add_argument("--curated50", action="store_true",
+                        help="Use curated 50-problem set (20 original + 30 new)")
     parser.add_argument("--output-dir", type=str, default="puzzles_humaneval",
                         help="Output directory (default: puzzles_humaneval)")
     args = parser.parse_args()
@@ -174,7 +191,10 @@ def main():
 
     by_num = {extract_task_number(p["task_id"]): p for p in problems}
 
-    if args.curated20:
+    if args.curated50:
+        indices = CURATED_50
+        print(f"Using curated 50-problem set: {indices}")
+    elif args.curated20:
         indices = CURATED_20
         print(f"Using curated 20-problem set: {indices}")
     elif args.indices:
