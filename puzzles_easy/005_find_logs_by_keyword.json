@@ -1,6 +1,7 @@
 {
   "puzzle_id": "find_logs_by_keyword",
   "difficulty": "Easy",
+  "category": "Strings",
   "prompt": "You are building a simple log analysis tool. Given a list of log lines (strings) and a keyword to search for, return a list of all log lines that contain the keyword as a substring. The search should be case-sensitive.\n\nExamples:\n\n  Input:\n    logs = [\n      \"2024-01-01 INFO Server started\",\n      \"2024-01-01 ERROR Disk full\",\n      \"2024-01-01 WARN Low memory\",\n      \"2024-01-02 ERROR Connection timeout\"\n    ]\n    keyword = \"ERROR\"\n\n  Output:\n    [\"2024-01-01 ERROR Disk full\", \"2024-01-02 ERROR Connection timeout\"]\n\n  Input:\n    logs = [\"2024-01-01 INFO OK\", \"2024-01-01 INFO Done\"]\n    keyword = \"ERROR\"\n\n  Output: []\n\nParameters:\n  - logs: List[str] \u2014 a list of log line strings (0 <= len(logs) <= 1000)\n  - keyword: str \u2014 the substring to search for (1 <= len(keyword) <= 100)\n\nReturns:\n  - List[str] \u2014 all log lines containing the keyword, in their original order.",
   "starter_code": "def find_logs_by_keyword(logs, keyword):\n    # TODO: Implement solution\n    pass",
   "reference_solution": "def find_logs_by_keyword(logs, keyword):\n    result = []\n    for log in logs:\n        if keyword in log:\n            result.append(log)\n    return result",

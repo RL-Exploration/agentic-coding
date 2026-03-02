@@ -1,6 +1,7 @@
 {
   "puzzle_id": "reverse_word_decoder",
   "difficulty": "Easy",
+  "category": "Strings",
   "prompt": "A secret message has been encoded by reversing each word individually, while keeping the words in their original order. Write a function to decode the message by reversing each word back to its original form.\n\nWords are separated by single spaces. Return the decoded message.\n\nExamples:\n  decode_message(\"olleH dlroW\") \u2192 \"Hello World\"\n  decode_message(\"nohtyP si nuf\") \u2192 \"Python is fun\"\n  decode_message(\"edoc\") \u2192 \"code\"\n\nInput: A string `encoded` containing the encoded message (words separated by single spaces).\nOutput: A string with each word reversed back to its decoded form.\n\nConstraints:\n  - 0 <= len(encoded) <= 1000\n  - Words are separated by exactly one space\n  - Words can contain letters, digits, or punctuation",
   "starter_code": "def decode_message(encoded):\n    # TODO: Decode the message by reversing each word\n    pass",
   "reference_solution": "def decode_message(encoded):\n    words = encoded.split(' ')\n    decoded_words = [word[::-1] for word in words]\n    return ' '.join(decoded_words)",

@@ -178,8 +178,9 @@ def comparison_report(
             lines.append("    (No puzzles in learning zone)")
             continue
         for j, p in enumerate(learning[:10]):
+            cat_str = f"[{p['category']}] " if p.get("category") else ""
             lines.append(
-                f"    {j+1:>2}. {p['puzzle_id']:<36} "
+                f"    {j+1:>2}. {p['puzzle_id']:<36} {cat_str}"
                 f"grpo={p['advantage_variance']:.3f}  "
                 f"p@1={p['pass_at_1']*100:4.0f}%"
             )

@@ -129,6 +129,7 @@ class Rollout:
     test_details: list[dict] = field(default_factory=list)
 
     difficulty: str = ""
+    category: str = ""
 
     @property
     def total_tests(self) -> int:
@@ -155,6 +156,7 @@ class Rollout:
             "error_type": self.error_type,
             "execution_time_ms": self.execution_time_ms,
             "difficulty": self.difficulty,
+            "category": self.category,
             "code": self.code,
         }
 
@@ -228,6 +230,7 @@ def build_rollout(puzzle: dict, idx: int, code: str, timeout: int) -> Rollout:
         puzzle_id=puzzle["puzzle_id"], puzzle_num=num, rollout_idx=idx,
         code=code,
         difficulty=puzzle["difficulty"],
+        category=puzzle.get("category", ""),
     )
 
     result = execute_rollout(code, puzzle["unit_tests"], timeout=timeout)
@@ -345,7 +348,9 @@ def run_eval(
     for i, puzzle in enumerate(puzzles):
         pid = puzzle["puzzle_id"]
         diff = puzzle["difficulty"]
-        print(f"[{i+1}/{total}] {pid} ({diff})", flush=True)
+        cat = puzzle.get("category", "")
+        label = f"{diff}, {cat}" if cat else diff
+        print(f"[{i+1}/{total}] {pid} ({label})", flush=True)
 
         try:
             raw_responses = generate_solutions(
@@ -421,6 +426,7 @@ def compute_views(rollouts: list[Rollout], k: int) -> dict[str, Any]:
             "puzzle_num": num,
             "puzzle_id": first.puzzle_id,
             "difficulty": first.difficulty,
+            "category": first.category,
             "pass_at_1": p_rate,
             f"pass_at_{k}": pass_at_k(n, c, k),
             "mean_test_pass_rate": round(mean_score, 4),
@@ -451,6 +457,23 @@ def compute_views(rollouts: list[Rollout], k: int) -> dict[str, Any]:
             "visible_pass_rate": sum(p["visible_pass_rate"] for p in pss) / n_d,
             "hidden_pass_rate": sum(p["hidden_pass_rate"] for p in pss) / n_d,
             "hidden_gap": sum(p["hidden_gap"] for p in pss) / n_d,
+            "learning_zone": sum(1 for p in pss if p["zone"] == "learning"),
+        }
+
+    # ── Category breakdown ──
+    category_view: dict[str, dict] = {}
+    all_categories = sorted(set(p["category"] for p in puzzle_summaries if p["category"]))
+    for cat in all_categories:
+        pss = [p for p in puzzle_summaries if p["category"] == cat]
+        if not pss:
+            continue
+        n_c = len(pss)
+        category_view[cat] = {
+            "count": n_c,
+            "pass_at_1": sum(p["pass_at_1"] for p in pss) / n_c,
+            f"pass_at_{k}": sum(p[f"pass_at_{k}"] for p in pss) / n_c,
+            "mean_test_pass_rate": sum(p["mean_test_pass_rate"] for p in pss) / n_c,
+            "advantage_variance": sum(p["advantage_variance"] for p in pss) / n_c,
             "learning_zone": sum(1 for p in pss if p["zone"] == "learning"),
         }
 
@@ -491,6 +514,7 @@ def compute_views(rollouts: list[Rollout], k: int) -> dict[str, Any]:
             "puzzle_id": ps["puzzle_id"],
             "puzzle_num": ps["puzzle_num"],
             "difficulty": ps["difficulty"],
+            "category": ps.get("category", ""),
             "priority": priority,
             "reason": reason,
             "zone": ps["zone"],
@@ -505,6 +529,7 @@ def compute_views(rollouts: list[Rollout], k: int) -> dict[str, Any]:
     return {
         "puzzle_summaries": puzzle_summaries,
         "difficulty": difficulty_view,
+        "category": category_view,
         "error_distribution": error_view,
         "advantage_spread": {"zones": zones, "ranked": advantage_ranked},
         "rl_targets": rl_targets,
@@ -567,6 +592,22 @@ def format_report(views: dict, model: str, k: int) -> str:
             f"{dd['learning_zone']:>3}/{dd['count']}"
         )
 
+    # ── Category breakdown ──
+    cv = views.get("category", {})
+    if cv:
+        section("CATEGORY BREAKDOWN")
+        lines.append(f"  {'Category':<20} {'#':>3} {'P@1':>6} {'P@k':>6} "
+                     f"{'Test%':>6} {'GRPO':>6} {'LrnZone':>8}")
+        lines.append("  " + "─" * (W - 4))
+        for cat in cv:
+            cc = cv[cat]
+            lines.append(
+                f"  {cat:<20} {cc['count']:>3} {cc['pass_at_1']*100:5.1f}% "
+                f"{cc[pk_key]*100:5.1f}% {cc['mean_test_pass_rate']*100:5.1f}% "
+                f"{cc['advantage_variance']:.3f} "
+                f"{cc['learning_zone']:>3}/{cc['count']}"
+            )
+
     # ── Error distribution ──
     section("ERROR TYPE DISTRIBUTION")
     ev = views["error_distribution"]
@@ -590,7 +631,8 @@ def format_report(views: dict, model: str, k: int) -> str:
     lines.append("  Top puzzles by GRPO reward variance (p@1 * (1 - p@1)):")
     for j, p in enumerate(views["advantage_spread"]["ranked"][:10]):
         bar = "█" * int(p["advantage_variance"] * 40)
-        lines.append(f"    {j+1:>2}. {p['puzzle_id']:<32} {p['difficulty']:<6} "
+        cat_str = f"[{p['category']}] " if p.get("category") else ""
+        lines.append(f"    {j+1:>2}. {p['puzzle_id']:<32} {cat_str}{p['difficulty']:<6} "
                      f"p@1={p['pass_at_1']*100:4.0f}%  grpo={p['advantage_variance']:.3f} {bar}")
 
     # ── RL targets ──
@@ -604,7 +646,8 @@ def format_report(views: dict, model: str, k: int) -> str:
             continue
         lines.append(f"  {label}:")
         for t in targets[:10]:
-            lines.append(f"    {t['puzzle_id']:<36} {t['difficulty']:<10} "
+            cat_str = f"[{t.get('category', '')}] " if t.get("category") else ""
+            lines.append(f"    {t['puzzle_id']:<36} {cat_str}{t['difficulty']:<10} "
                          f"p@1={t['pass_at_1']*100:4.0f}%")
             lines.append(f"      → {t['reason']}")
         lines.append("")
@@ -663,6 +706,7 @@ def load_rollouts(path: str) -> list[Rollout]:
                 error_type=d["error_type"],
                 execution_time_ms=d.get("execution_time_ms", 0),
                 difficulty=d["difficulty"],
+                category=d.get("category", ""),
             )
             rollouts.append(r)
     return rollouts

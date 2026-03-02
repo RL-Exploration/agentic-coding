@@ -1,6 +1,7 @@
 {
   "puzzle_id": "normalize_names_title_case",
   "difficulty": "Easy",
+  "category": "Strings",
   "prompt": "You are cleaning up a database of names. Each name may have inconsistent casing (ALL CAPS, all lowercase, or rAnDoM mixed case) and may have leading/trailing whitespace.\n\nWrite a function that takes a list of name strings and returns a new list where each name is normalized to Title Case (first letter of each word capitalized, rest lowercase) with leading/trailing whitespace removed.\n\nExamples:\n  normalize_names([\"JOHN DOE\", \"jane smith\", \"aLiCe BoB\"])\n  => [\"John Doe\", \"Jane Smith\", \"Alice Bob\"]\n\n  normalize_names([\"  MARY JANE  \", \"bob\"])\n  => [\"Mary Jane\", \"Bob\"]\n\n  normalize_names([])\n  => []\n\nInput: A list of strings (0 <= len(names) <= 100). Each string contains only letters and spaces.\nOutput: A list of strings, each in Title Case with no leading/trailing whitespace.",
   "starter_code": "def normalize_names(names):\n    # TODO: Implement solution\n    pass",
   "reference_solution": "def normalize_names(names):\n    result = []\n    for name in names:\n        cleaned = name.strip()\n        result.append(cleaned.title())\n    return result",

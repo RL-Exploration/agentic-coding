@@ -1,6 +1,7 @@
 {
   "puzzle_id": "palindrome_word_finder",
   "difficulty": "Easy",
+  "category": "Strings",
   "prompt": "In many word games, palindromes (words that read the same forwards and backwards) earn bonus points!\n\nWrite a function `find_palindromes(words)` that takes a list of strings and returns a new list containing only the words that are palindromes.\n\nThe check should be case-insensitive (e.g., \"Kayak\" is a palindrome because \"kayak\" reversed is \"kayak\"), but the returned words should preserve their original casing.\n\nExamples:\n  find_palindromes([\"racecar\", \"hello\", \"madam\"]) \u2192 [\"racecar\", \"madam\"]\n  find_palindromes([\"Kayak\", \"Python\", \"Level\"]) \u2192 [\"Kayak\", \"Level\"]\n  find_palindromes([\"hello\", \"world\"]) \u2192 []\n\nInput: A list of strings (0 <= len(words) <= 100, each word has 0-50 characters, contains only letters)\nOutput: A list of strings (the palindromes, in their original order and casing)",
   "starter_code": "def find_palindromes(words):\n    # TODO: Implement solution\n    pass",
   "reference_solution": "def find_palindromes(words):\n    result = []\n    for word in words:\n        lower = word.lower()\n        if lower == lower[::-1]:\n            result.append(word)\n    return result",

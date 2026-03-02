@@ -1,6 +1,7 @@
 {
   "puzzle_id": "most_frequent_character",
   "difficulty": "Easy",
+  "category": "Strings",
   "prompt": "Write a function `most_frequent_char(text)` that finds the most frequently occurring character in a string, ignoring spaces.\n\nIf multiple characters are tied for the highest frequency, return the one that appears first in the string.\n\nIf the string is empty or contains only spaces, return an empty string \"\".\n\nNote: The function is case-sensitive ('A' and 'a' are different characters).\n\nExamples:\n  most_frequent_char(\"hello world\") => 'l'        # l appears 3 times\n  most_frequent_char(\"banana\") => 'a'              # a appears 3 times\n  most_frequent_char(\"aabbcc\") => 'a'              # tie at 2 each, 'a' appears first\n  most_frequent_char(\"\") => \"\"                      # empty string\n\nInput: A string (str)\nOutput: A single character (str) or empty string\nConstraints: 0 <= len(text) <= 1000",
   "starter_code": "def most_frequent_char(text):\n    # TODO: Implement solution\n    pass",
   "reference_solution": "def most_frequent_char(text):\n    counts = {}\n    for ch in text:\n        if ch != ' ':\n            counts[ch] = counts.get(ch, 0) + 1\n    if not counts:\n        return \"\"\n    max_count = max(counts.values())\n    for ch in text:\n        if ch != ' ' and counts[ch] == max_count:\n            return ch",
