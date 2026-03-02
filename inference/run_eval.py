@@ -34,73 +34,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-# ---------------------------------------------------------------------------
-# Puzzle catalog (from concept_map.md)
-# ---------------------------------------------------------------------------
-
-_CATALOG: list[tuple[str, str, str, str]] = [
-    # (puzzle_num, concept_row, micro_skill, skill_family)
-    ("001", "A",  "Dijkstra with Resource-Constrained State",           "Graph Algorithms"),
-    ("002", "H",  "Grouped Knapsack DP",                                "Dynamic Programming"),
-    ("003", "B",  "Bitmask DP over Subset Enumeration",                 "Dynamic Programming"),
-    ("004", "I",  "Tree Aggregation via Path Prefix Parsing",           "Tree / Path Aggregation"),
-    ("005", "J",  "Greedy Interval Scheduling",                         "Greedy / Two-Pointer / Sliding Window"),
-    ("006", "K",  "Bitwise Cipher Implementation",                      "Number Theory / Modular Arithmetic"),
-    ("007", "L",  "Sliding Window Sum",                                 "Greedy / Two-Pointer / Sliding Window"),
-    ("008", "M",  "Union-Find with Metadata Tracking",                  "Data Structures"),
-    ("009", "N",  "Topological Sort with Multi-Type Dependencies",      "Graph Algorithms"),
-    ("010", "O",  "Segment Tree with Lazy Propagation",                 "Data Structures"),
-    ("011", "P",  "Trie-Based Top-K Prefix Retrieval",                  "Data Structures"),
-    ("012", "E",  "Multi-Key Custom Comparator Sorting",                "Sorting / Comparators"),
-    ("013", "C",  "Backtracking Constraint Satisfaction",               "Dynamic Programming"),
-    ("014", "I2", "Matrix Ring Extraction and Rotation",                "Simulation / State Machines"),
-    ("015", "I3", "Modular Hash Collision Analysis",                    "Number Theory / Modular Arithmetic"),
-    ("016", "Q",  "Computational Geometry Shortest Path",               "Computational Geometry"),
-    ("017", "R",  "Weighted Job Scheduling DP",                         "Dynamic Programming"),
-    ("018", "S",  "Stack-Based Interpreter with Control Flow",          "Simulation / State Machines"),
-    ("019", "G",  "Grid-Based BFS / Dijkstra",                         "Graph Algorithms"),
-    ("020", "T",  "Binary Search on Answer",                            "Greedy / Two-Pointer / Sliding Window"),
-    ("021", "U",  "Multi-Dimensional Constrained Counting DP",          "Dynamic Programming"),
-    ("022", "V",  "Two-Pointer Merge with Tolerance",                   "Greedy / Two-Pointer / Sliding Window"),
-    ("023", "D",  "Game Theory DP / Minimax",                           "Dynamic Programming"),
-    ("024", "C",  "Backtracking Constraint Satisfaction",               "Dynamic Programming"),
-    ("025", "A",  "Dijkstra with Resource-Constrained State",           "Graph Algorithms"),
-    ("026", "W",  "Max-Flow Network",                                   "Graph Algorithms"),
-    ("027", "X",  "Interval DP (Divide-and-Conquer Cost)",              "Dynamic Programming"),
-    ("028", "Y",  "Linked List with Pool Management",                   "Data Structures"),
-    ("029", "Z",  "Monotonic Stack for Pair Counting",                  "Data Structures"),
-    ("030", "AA", "Suffix Array + LCP + Sliding Window",                "String Algorithms"),
-    ("031", "AB", "Convex Hull + Point-in-Polygon",                     "Computational Geometry"),
-    ("032", "AC", "Fenwick Tree for Dynamic Rank Queries",              "Data Structures"),
-    ("033", "AD", "Consistent Hashing with Virtual Nodes",              "System Design / Hashing"),
-    ("034", "AE", "Rule-Based Cellular Automaton Simulation",           "Simulation / State Machines"),
-    ("035", "AF", "Expected Value Decision",                            "Probability / Expected Value"),
-    ("036", "AG", "Numerical Root-Finding (Spectral Radius)",           "Number Theory / Modular Arithmetic"),
-    ("037", "E",  "Multi-Key Custom Comparator Sorting",                "Sorting / Comparators"),
-    ("038", "AH", "Cycle Detection in Functional Graph",                "Graph Algorithms"),
-    ("039", "B",  "Bitmask DP over Subset Enumeration",                 "Dynamic Programming"),
-    ("040", "F",  "Sweep Line with Coordinate Compression",             "Sweep Line / Coord Compression"),
-    ("041", "AI", "Sparse Table for Range Queries",                     "Data Structures"),
-    ("042", "AJ", "Interval Clipping + Merging + Gap-Finding",          "Sweep Line / Coord Compression"),
-    ("043", "AK", "KMP String Matching",                                "String Algorithms"),
-    ("044", "AL", "Chinese Remainder Theorem + Extended GCD",           "Number Theory / Modular Arithmetic"),
-    ("045", "AM", "DFA Simulation",                                     "Simulation / State Machines"),
-    ("046", "D",  "Game Theory DP / Minimax",                           "Dynamic Programming"),
-    ("047", "F",  "Sweep Line with Coordinate Compression",             "Sweep Line / Coord Compression"),
-    ("048", "AN", "Event-Driven Simulation with State Tracking",        "Simulation / State Machines"),
-    ("049", "G",  "Grid-Based BFS / Dijkstra",                         "Graph Algorithms"),
-    ("050", "AO", "Multi-Policy Cache System Design",                   "System Design / Hashing"),
-]
-
-PUZZLE_META: dict[str, dict[str, str]] = {}
-CONCEPT_ROWS: dict[str, dict] = {}
-for _num, _row, _skill, _family in _CATALOG:
-    PUZZLE_META[_num] = {"concept_row": _row, "micro_skill": _skill, "skill_family": _family}
-    if _row not in CONCEPT_ROWS:
-        CONCEPT_ROWS[_row] = {"skill": _skill, "family": _family, "puzzles": []}
-    CONCEPT_ROWS[_row]["puzzles"].append(_num)
-
-SKILL_FAMILIES = sorted(set(m["skill_family"] for m in PUZZLE_META.values()))
 
 # ---------------------------------------------------------------------------
 # Prompting
@@ -195,11 +128,7 @@ class Rollout:
     execution_time_ms: int = 0
     test_details: list[dict] = field(default_factory=list)
 
-    # category info (filled from PUZZLE_META)
     difficulty: str = ""
-    concept_row: str = ""
-    micro_skill: str = ""
-    skill_family: str = ""
 
     @property
     def total_tests(self) -> int:
@@ -226,9 +155,6 @@ class Rollout:
             "error_type": self.error_type,
             "execution_time_ms": self.execution_time_ms,
             "difficulty": self.difficulty,
-            "concept_row": self.concept_row,
-            "micro_skill": self.micro_skill,
-            "skill_family": self.skill_family,
             "code": self.code,
         }
 
@@ -298,14 +224,10 @@ def classify_error(result: dict, vis_pass: int, vis_total: int,
 def build_rollout(puzzle: dict, idx: int, code: str, timeout: int) -> Rollout:
     """Generate + test one rollout, return populated Rollout."""
     num = puzzle["_num"]
-    meta = PUZZLE_META.get(num, {})
     r = Rollout(
         puzzle_id=puzzle["puzzle_id"], puzzle_num=num, rollout_idx=idx,
         code=code,
         difficulty=puzzle["difficulty"],
-        concept_row=meta.get("concept_row", "?"),
-        micro_skill=meta.get("micro_skill", "?"),
-        skill_family=meta.get("skill_family", "?"),
     )
 
     result = execute_rollout(code, puzzle["unit_tests"], timeout=timeout)
@@ -423,8 +345,7 @@ def run_eval(
     for i, puzzle in enumerate(puzzles):
         pid = puzzle["puzzle_id"]
         diff = puzzle["difficulty"]
-        fam = PUZZLE_META.get(puzzle["_num"], {}).get("skill_family", "?")
-        print(f"[{i+1}/{total}] {pid} ({diff}, {fam})", flush=True)
+        print(f"[{i+1}/{total}] {pid} ({diff})", flush=True)
 
         try:
             raw_responses = generate_solutions(
@@ -500,9 +421,6 @@ def compute_views(rollouts: list[Rollout], k: int) -> dict[str, Any]:
             "puzzle_num": num,
             "puzzle_id": first.puzzle_id,
             "difficulty": first.difficulty,
-            "concept_row": first.concept_row,
-            "micro_skill": first.micro_skill,
-            "skill_family": first.skill_family,
             "pass_at_1": p_rate,
             f"pass_at_{k}": pass_at_k(n, c, k),
             "mean_test_pass_rate": round(mean_score, 4),
@@ -516,28 +434,6 @@ def compute_views(rollouts: list[Rollout], k: int) -> dict[str, Any]:
             "dominant_error": dominant_error,
             "zone": ("saturated" if p_rate == 1 else "learning" if c > 0 else "dead"),
         })
-
-    # ── Concept row heatmap ──
-    by_row: dict[str, list[dict]] = defaultdict(list)
-    for ps in puzzle_summaries:
-        by_row[ps["concept_row"]].append(ps)
-
-    concept_heatmap: dict[str, dict] = {}
-    for row_id, pss in sorted(by_row.items()):
-        row_info = CONCEPT_ROWS.get(row_id, {})
-        n_puzzles = len(pss)
-        concept_heatmap[row_id] = {
-            "skill": row_info.get("skill", "?"),
-            "family": row_info.get("family", "?"),
-            "puzzles": [p["puzzle_num"] for p in pss],
-            "difficulty_spread": [p["difficulty"] for p in pss],
-            "pass_at_1": sum(p["pass_at_1"] for p in pss) / n_puzzles,
-            f"pass_at_{k}": sum(p[f"pass_at_{k}"] for p in pss) / n_puzzles,
-            "mean_test_pass_rate": sum(p["mean_test_pass_rate"] for p in pss) / n_puzzles,
-            "advantage_variance": sum(p["advantage_variance"] for p in pss) / n_puzzles,
-            "is_paired": n_puzzles > 1,
-            "confirmed_gap": n_puzzles > 1 and all(p["pass_at_1"] == 0 for p in pss),
-        }
 
     # ── Difficulty breakdown ──
     difficulty_view: dict[str, dict] = {}
@@ -574,24 +470,6 @@ def compute_views(rollouts: list[Rollout], k: int) -> dict[str, Any]:
         zones[ps["zone"]] += 1
     advantage_ranked = sorted(puzzle_summaries, key=lambda p: -p["score_variance"])
 
-    # ── Skill family radar ──
-    family_view: dict[str, dict] = {}
-    all_families = sorted(set(p["skill_family"] for p in puzzle_summaries))
-    for fam in all_families:
-        pss = [p for p in puzzle_summaries if p["skill_family"] == fam]
-        if not pss:
-            continue
-        n_f = len(pss)
-        family_view[fam] = {
-            "count": n_f,
-            "pass_at_1": sum(p["pass_at_1"] for p in pss) / n_f,
-            f"pass_at_{k}": sum(p[f"pass_at_{k}"] for p in pss) / n_f,
-            "mean_test_pass_rate": sum(p["mean_test_pass_rate"] for p in pss) / n_f,
-            "advantage_variance": sum(p["advantage_variance"] for p in pss) / n_f,
-            "learning_zone": sum(1 for p in pss if p["zone"] == "learning"),
-            "dead": sum(1 for p in pss if p["zone"] == "dead"),
-        }
-
     # ── RL target ranking (eval_plan.md priority 1/2/3) ──
     rl_targets: list[dict] = []
     for ps in puzzle_summaries:
@@ -613,9 +491,6 @@ def compute_views(rollouts: list[Rollout], k: int) -> dict[str, Any]:
             "puzzle_id": ps["puzzle_id"],
             "puzzle_num": ps["puzzle_num"],
             "difficulty": ps["difficulty"],
-            "concept_row": ps["concept_row"],
-            "micro_skill": ps["micro_skill"],
-            "skill_family": ps["skill_family"],
             "priority": priority,
             "reason": reason,
             "zone": ps["zone"],
@@ -629,11 +504,9 @@ def compute_views(rollouts: list[Rollout], k: int) -> dict[str, Any]:
 
     return {
         "puzzle_summaries": puzzle_summaries,
-        "concept_heatmap": concept_heatmap,
         "difficulty": difficulty_view,
         "error_distribution": error_view,
         "advantage_spread": {"zones": zones, "ranked": advantage_ranked},
-        "skill_families": family_view,
         "rl_targets": rl_targets,
     }
 
@@ -678,27 +551,6 @@ def format_report(views: dict, model: str, k: int) -> str:
     lines.append(f"  Hidden test rate:         {avg_hid*100:5.1f}%")
     lines.append(f"  Hidden gap (vis - hid):   {(avg_vis-avg_hid)*100:+5.1f}%")
 
-    # ── Concept row heatmap ──
-    section("CONCEPT ROW HEATMAP")
-    ch = views["concept_heatmap"]
-    hdr = f"  {'Row':<4} {'Micro-Skill':<46} {'P@1':>5} {'P@k':>5} {'Test%':>5}  {'Gap?'}"
-    lines.append(hdr)
-    lines.append("  " + "─" * (W - 4))
-    sorted_rows = sorted(ch.items(), key=lambda x: -x[1]["mean_test_pass_rate"])
-    for row_id, rd in sorted_rows:
-        mark = ""
-        if rd.get("confirmed_gap"):
-            mark = "⚠ CONFIRMED GAP"
-        elif rd["pass_at_1"] == 0 and not rd["is_paired"]:
-            mark = "? singleton"
-        elif rd["pass_at_1"] > 0.4:
-            mark = "✓"
-        lines.append(
-            f"  {row_id:<4} {rd['skill']:<46} "
-            f"{rd['pass_at_1']*100:4.0f}% {rd[pk_key]*100:4.0f}% "
-            f"{rd['mean_test_pass_rate']*100:4.0f}%  {mark}"
-        )
-
     # ── Difficulty breakdown ──
     section("DIFFICULTY BREAKDOWN")
     dv = views["difficulty"]
@@ -741,23 +593,6 @@ def format_report(views: dict, model: str, k: int) -> str:
         lines.append(f"    {j+1:>2}. {p['puzzle_id']:<32} {p['difficulty']:<6} "
                      f"var={p['score_variance']:.3f} {bar}")
 
-    # ── Skill family radar ──
-    section("SKILL FAMILY RADAR")
-    fv = views["skill_families"]
-    if fv:
-        lines.append(f"  {'Family':<40} {'#':>3} {'P@1':>5} {'P@k':>5} {'Test%':>5} {'Lrn':>4}")
-        lines.append("  " + "─" * (W - 4))
-    else:
-        lines.append("  (No skill family metadata for this puzzle set)")
-    for fname in sorted(fv, key=lambda f: -fv[f]["mean_test_pass_rate"]):
-        fd = fv[fname]
-        lines.append(
-            f"  {fname:<40} {fd['count']:>3} "
-            f"{fd['pass_at_1']*100:4.0f}% {fd[pk_key]*100:4.0f}% "
-            f"{fd['mean_test_pass_rate']*100:4.0f}% "
-            f"{fd['learning_zone']:>2}/{fd['count']}"
-        )
-
     # ── RL targets ──
     section("RL TRAINING TARGETS (Ranked)")
     lines.append("")
@@ -769,18 +604,11 @@ def format_report(views: dict, model: str, k: int) -> str:
             continue
         lines.append(f"  {label}:")
         for t in targets[:10]:
-            lines.append(f"    {t['puzzle_id']:<32} {t['difficulty']:<6} "
-                         f"Row {t['concept_row']:<4} {t['skill_family']}")
+            lines.append(f"    {t['puzzle_id']:<36} {t['difficulty']:<10} "
+                         f"p@1={t['pass_at_1']*100:4.0f}%")
             lines.append(f"      → {t['reason']}")
         lines.append("")
 
-    # ── Confirmed gaps (paired rows both at 0%) ──
-    confirmed = [(rid, rd) for rid, rd in ch.items() if rd.get("confirmed_gap")]
-    if confirmed:
-        lines.append("  CONFIRMED SKILL GAPS (paired rows, both at 0%):")
-        for rid, rd in confirmed:
-            lines.append(f"    Row {rid}: {rd['skill']}  ({rd['family']})")
-        lines.append("")
 
     lines.append("=" * W)
     return "\n".join(lines)
@@ -805,12 +633,6 @@ def save_artifacts(rollouts: list[Rollout], views: dict, output_dir: str):
     with open(path, "w") as f:
         json.dump(views["puzzle_summaries"], f, indent=2)
     print(f"  summary.json                → {path}")
-
-    # concept_heatmap.json
-    path = os.path.join(output_dir, "concept_heatmap.json")
-    with open(path, "w") as f:
-        json.dump(views["concept_heatmap"], f, indent=2)
-    print(f"  concept_heatmap.json        → {path}")
 
     # rl_targets_ranked.json
     path = os.path.join(output_dir, "rl_targets_ranked.json")
@@ -841,9 +663,6 @@ def load_rollouts(path: str) -> list[Rollout]:
                 error_type=d["error_type"],
                 execution_time_ms=d.get("execution_time_ms", 0),
                 difficulty=d["difficulty"],
-                concept_row=d["concept_row"],
-                micro_skill=d.get("micro_skill", "?"),
-                skill_family=d.get("skill_family", "?"),
             )
             rollouts.append(r)
     return rollouts
@@ -855,8 +674,8 @@ def load_rollouts(path: str) -> list[Rollout]:
 
 def main():
     parser = argparse.ArgumentParser(description="RL Coding Puzzle Evaluation")
-    parser.add_argument("--model", default="Qwen/Qwen2.5-Coder-3B-Instruct",
-                        help="HuggingFace model ID (default: Qwen/Qwen2.5-Coder-3B-Instruct)")
+    parser.add_argument("--model", default="Qwen/Qwen2.5-Coder-1.5B-Instruct",
+                        help="HuggingFace model ID (default: Qwen/Qwen2.5-Coder-1.5B-Instruct)")
     parser.add_argument("--device", default="auto",
                         help="Device map for model loading (default: auto)")
     parser.add_argument("--puzzle-dir", default=None,

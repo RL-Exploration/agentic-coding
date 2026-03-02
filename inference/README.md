@@ -4,7 +4,7 @@ Runs the evaluation pipeline against coding puzzles using a HuggingFace model.
 Supports three puzzle sets:
 
 - **puzzles/** -- v1 dataset (50 hard algorithmic puzzles, targeting 14B)
-- **puzzles_easy/** -- v2 dataset (50 easy puzzles, targeting Qwen 1.5-3B for RL)
+- **puzzles_easy/** -- v2 dataset (easy puzzles, targeting Qwen 1.5B for RL)
 - **puzzles_humaneval/** -- 50 HumanEval+ problems converted to our format
 
 ## Quick Start (Local / Lightning AI)
@@ -32,7 +32,7 @@ with a comparison report at `../eval_results/comparison_report.txt`.
 
 ```bash
 # 1. Create a Lightning Studio with a GPU
-#    L4 (24GB) is sufficient for 3B models
+#    L4 (24GB) is sufficient for 1.5B models
 #    L40S / A100 for 14B models
 #    Go to https://lightning.ai -> New Studio -> Select GPU
 
@@ -49,7 +49,7 @@ python prepare_humaneval.py
 
 # 5. Run the comparison eval
 cd inference
-python run_comparison.py --model Qwen/Qwen2.5-Coder-3B-Instruct --samples 8
+python run_comparison.py --model Qwen/Qwen2.5-Coder-1.5B-Instruct --samples 8
 ```
 
 ## CLI Reference
@@ -62,7 +62,7 @@ python run_eval.py [--model MODEL] [--puzzle-dir DIR] [--samples K] [--analyze F
 
 | Flag | Default | Description |
 |---|---|---|
-| `--model` | `Qwen/Qwen2.5-Coder-3B-Instruct` | HuggingFace model ID |
+| `--model` | `Qwen/Qwen2.5-Coder-1.5B-Instruct` | HuggingFace model ID |
 | `--device` | `auto` | Device map for model loading |
 | `--puzzle-dir` | `../puzzles` | Puzzle directory to evaluate |
 | `--samples` | `8` | Rollouts per puzzle (k for pass@k) |
@@ -79,7 +79,7 @@ python run_comparison.py [--model MODEL] [--samples K] [--analyze-only]
 
 | Flag | Default | Description |
 |---|---|---|
-| `--model` | `Qwen/Qwen2.5-Coder-3B-Instruct` | HuggingFace model ID |
+| `--model` | `Qwen/Qwen2.5-Coder-1.5B-Instruct` | HuggingFace model ID |
 | `--device` | `auto` | Device map for model loading |
 | `--samples` | `8` | Rollouts per puzzle |
 | `--timeout` | `30` | Test execution timeout (seconds) |
@@ -97,7 +97,7 @@ python server.py [--model MODEL] [--device DEVICE] [--temperature T]
 
 | Flag | Default | Description |
 |---|---|---|
-| `--model` | `Qwen/Qwen2.5-Coder-3B-Instruct` | HuggingFace model ID |
+| `--model` | `Qwen/Qwen2.5-Coder-1.5B-Instruct` | HuggingFace model ID |
 | `--device` | `auto` | Device map for model loading |
 | `--max-new-tokens` | `2048` | Max tokens to generate |
 | `--temperature` | `0.7` | Sampling temperature |
@@ -110,8 +110,7 @@ python server.py [--model MODEL] [--device DEVICE] [--temperature T]
 |---|---|
 | `raw_rollouts.jsonl` | One line per (puzzle, rollout) with all metrics |
 | `summary.json` | Per-puzzle: pass@1, pass@k, error breakdown, advantage |
-| `concept_heatmap.json` | pass@1 and pass@k per concept row |
-| `rl_targets_ranked.json` | Concept rows ranked by RL training priority |
+| `rl_targets_ranked.json` | Puzzles ranked by RL training priority |
 | `report.txt` | Full text evaluation report |
 
 ### Comparison (eval_results/)

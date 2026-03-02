@@ -6,7 +6,7 @@ For batch evaluation, use run_eval.py instead.
 
 Usage:
     python server.py                       # defaults
-    python server.py --model Qwen/Qwen2.5-Coder-3B-Instruct
+    python server.py --model Qwen/Qwen2.5-Coder-1.5B-Instruct
 """
 
 import argparse
@@ -15,8 +15,8 @@ import sys
 
 def main():
     parser = argparse.ArgumentParser(description="Interactive inference shell")
-    parser.add_argument("--model", default="Qwen/Qwen2.5-Coder-3B-Instruct",
-                        help="HuggingFace model ID (default: Qwen/Qwen2.5-Coder-3B-Instruct)")
+    parser.add_argument("--model", default="Qwen/Qwen2.5-Coder-1.5B-Instruct",
+                        help="HuggingFace model ID (default: Qwen/Qwen2.5-Coder-1.5B-Instruct)")
     parser.add_argument("--device", default="auto",
                         help="Device map (default: auto)")
     parser.add_argument("--max-new-tokens", type=int, default=2048)

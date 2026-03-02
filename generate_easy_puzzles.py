@@ -20,7 +20,7 @@ from dotenv import load_dotenv
 
 SYSTEM_PROMPT = """\
 You are a Python Programming Instructor designing beginner-friendly coding exercises \
-for training a SMALL language model (1.5-3 billion parameters) via reinforcement learning.
+for training a SMALL language model (1.5 billion parameters) via reinforcement learning.
 
 DIFFICULTY CALIBRATION — THIS IS CRITICAL:
 The target model is roughly equivalent to a first-year CS student. It can handle:

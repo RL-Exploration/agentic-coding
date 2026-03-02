@@ -231,8 +231,8 @@ def main():
     parser = argparse.ArgumentParser(
         description="Compare easy puzzles vs HumanEval+ for RL training"
     )
-    parser.add_argument("--model", default="Qwen/Qwen2.5-Coder-3B-Instruct",
-                        help="HuggingFace model ID (default: Qwen/Qwen2.5-Coder-3B-Instruct)")
+    parser.add_argument("--model", default="Qwen/Qwen2.5-Coder-1.5B-Instruct",
+                        help="HuggingFace model ID (default: Qwen/Qwen2.5-Coder-1.5B-Instruct)")
     parser.add_argument("--device", default="auto")
     parser.add_argument("--samples", type=int, default=8)
     parser.add_argument("--timeout", type=int, default=30)

@@ -7,7 +7,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR"
 
-MODEL="${MODEL:-Qwen/Qwen2.5-Coder-3B-Instruct}"
+MODEL="${MODEL:-Qwen/Qwen2.5-Coder-1.5B-Instruct}"
 SAMPLES="${SAMPLES:-8}"
 
 echo "=== Installing dependencies ==="
