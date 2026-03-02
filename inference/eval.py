@@ -40,7 +40,7 @@ from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
 
-from eval_core import (
+from eval_library import (
     Rollout,
     build_rollout,
     compute_views,

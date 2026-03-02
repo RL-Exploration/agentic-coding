@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Shared evaluation library for RL Coding Puzzle pipeline.
+"""Shared evaluation library for the RL Coding Puzzle pipeline.
 
 Not meant to be run directly — imported by eval.py.
 Contains: Rollout dataclass, test harness, model loading, generate_solutions,
