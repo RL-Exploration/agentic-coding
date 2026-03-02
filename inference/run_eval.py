@@ -44,6 +44,7 @@ from eval_core import (
     extract_code,
     format_report,
     generate_solutions,
+    generate_solutions_batch,
     load_model,
     load_puzzles,
     load_rollouts,
@@ -57,12 +58,46 @@ MODEL_REGISTRY = {
     "3B":   "Qwen/Qwen2.5-Coder-3B-Instruct",
 }
 
+# Conservative defaults — safe on L40S 48GB with max_new_tokens=2048
+DEFAULT_BATCH_PUZZLES = {"0.5B": 8, "1.5B": 4, "3B": 4}
+
 K_VALUES = [1, 2, 4, 8]
 
 
 # ---------------------------------------------------------------------------
-# Inference
+# Inference (batched generation + parallel testing)
 # ---------------------------------------------------------------------------
+
+def _generate_batch_safe(
+    model, tokenizer, batch: list[dict],
+    num_samples: int, temperature: float,
+) -> list[list[str]]:
+    """Try batched generation; fall back to sequential on OOM."""
+    import torch
+
+    try:
+        return generate_solutions_batch(
+            model, tokenizer, batch,
+            num_samples=num_samples, temperature=temperature,
+        )
+    except RuntimeError as e:
+        if "out of memory" not in str(e).lower():
+            raise
+        torch.cuda.empty_cache()
+        print(f"    OOM at batch={len(batch)}, falling back to sequential",
+              flush=True)
+        results = []
+        for puzzle in batch:
+            try:
+                resps = generate_solutions(
+                    model, tokenizer, puzzle["prompt"], puzzle["starter_code"],
+                    num_samples=num_samples, temperature=temperature,
+                )
+            except Exception as e2:
+                resps = [f"# ERROR: {e2}"] * num_samples
+            results.append(resps)
+        return results
+
 
 def eval_model(
     model_tag: str,
@@ -72,45 +107,80 @@ def eval_model(
     timeout: int,
     temperature: float,
     device: str,
+    batch_puzzles: int = 0,
 ) -> list[Rollout]:
-    """Load a model, run inference on all puzzles, return rollouts, then free GPU."""
+    """Load a model, run batched inference + parallel tests, then free GPU.
+
+    batch_puzzles=0 means auto-detect from model_tag.
+    """
+    import time as _time
     import torch
+    from concurrent.futures import ThreadPoolExecutor
+
+    if batch_puzzles <= 0:
+        batch_puzzles = DEFAULT_BATCH_PUZZLES.get(model_tag, 4)
 
     print(f"\n{'='*70}")
     print(f"  MODEL: {model_tag} ({model_id})")
-    print(f"  Puzzles: {len(puzzles)}  Samples: {num_samples}  Temp: {temperature}")
+    print(f"  Puzzles: {len(puzzles)}  Samples: {num_samples}  "
+          f"Temp: {temperature}  Batch: {batch_puzzles}")
     print(f"{'='*70}\n")
 
     model, tokenizer = load_model(model_id, device=device)
     all_rollouts: list[Rollout] = []
+    total = len(puzzles)
+    n_batches = (total + batch_puzzles - 1) // batch_puzzles
+    max_workers = min(batch_puzzles * num_samples, 32)
 
-    for i, puzzle in enumerate(puzzles):
-        pid = puzzle["puzzle_id"]
-        cat = puzzle.get("category", "")
-        label = f"[{cat}] " if cat else ""
-        print(f"  [{i+1}/{len(puzzles)}] {label}{pid}", flush=True)
+    with ThreadPoolExecutor(max_workers=max_workers) as test_pool:
+        for bi, batch_start in enumerate(range(0, total, batch_puzzles)):
+            batch = puzzles[batch_start:batch_start + batch_puzzles]
+            batch_end = batch_start + len(batch)
 
-        try:
-            raw_responses = generate_solutions(
-                model, tokenizer, puzzle["prompt"], puzzle["starter_code"],
-                num_samples=num_samples, temperature=temperature,
-            )
-        except Exception as e:
-            print(f"    Generation error: {e}", flush=True)
-            raw_responses = [f"# GENERATION ERROR: {e}"] * num_samples
+            # ── Batched GPU generation ──
+            t0 = _time.monotonic()
+            try:
+                batch_responses = _generate_batch_safe(
+                    model, tokenizer, batch,
+                    num_samples=num_samples, temperature=temperature,
+                )
+            except Exception as e:
+                print(f"    Generation error: {e}", flush=True)
+                batch_responses = [
+                    [f"# ERROR: {e}"] * num_samples for _ in batch
+                ]
+            gen_ms = int((_time.monotonic() - t0) * 1000)
 
-        passes = 0
-        for j, raw in enumerate(raw_responses):
-            code = extract_code(raw)
-            rollout = build_rollout(puzzle, j, code, timeout)
-            rollout.puzzle_id = pid
-            all_rollouts.append(rollout)
-            if rollout.passed:
-                passes += 1
-            tag = "PASS" if rollout.passed else rollout.error_type
-            print(f"    [{j+1}/{num_samples}] {tag}", flush=True)
+            # ── Submit all tests to thread pool ──
+            t0 = _time.monotonic()
+            puzzle_futures: list[tuple[dict, list]] = []
+            for puzzle, responses in zip(batch, batch_responses):
+                codes = [extract_code(raw) for raw in responses]
+                futs = [
+                    test_pool.submit(build_rollout, puzzle, j, code, timeout)
+                    for j, code in enumerate(codes)
+                ]
+                puzzle_futures.append((puzzle, futs))
 
-        print(f"    -> {passes}/{num_samples} pass\n", flush=True)
+            # ── Collect results + report per puzzle ──
+            for puzzle, futs in puzzle_futures:
+                pid = puzzle["puzzle_id"]
+                cat = puzzle.get("category", "")
+                label = f"[{cat}] " if cat else ""
+
+                rollouts = [f.result() for f in futs]
+                for r in rollouts:
+                    r.puzzle_id = pid
+                all_rollouts.extend(rollouts)
+
+                passes = sum(1 for r in rollouts if r.passed)
+                idx = batch_start + batch.index(puzzle) + 1
+                print(f"  [{idx}/{total}] {label}{pid}: "
+                      f"{passes}/{num_samples} pass", flush=True)
+
+            test_ms = int((_time.monotonic() - t0) * 1000)
+            print(f"    batch {bi+1}/{n_batches}: "
+                  f"gen={gen_ms}ms test={test_ms}ms\n", flush=True)
 
     del model, tokenizer
     gc.collect()
@@ -462,6 +532,9 @@ def main():
     parser.add_argument("--timeout", type=int, default=30)
     parser.add_argument("--temperature", type=float, default=1.0,
                         help="Sampling temperature (default: 1.0)")
+    parser.add_argument("--batch-puzzles", type=int, default=0,
+                        help="Puzzles per GPU batch (0=auto: 8 for 0.5B, "
+                             "4 for 1.5B/3B)")
     parser.add_argument("--device", default="auto")
     parser.add_argument(
         "--plot-only", action="store_true",
@@ -561,6 +634,7 @@ def main():
             model_tag, model_id, puzzles,
             num_samples=args.samples, timeout=args.timeout,
             temperature=args.temperature, device=args.device,
+            batch_puzzles=args.batch_puzzles,
         )
         per_model_rollouts[model_tag] = rollouts
 

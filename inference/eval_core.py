@@ -278,20 +278,25 @@ def load_model(model_name: str, device: str = "auto"):
     return model, tokenizer
 
 
-def generate_solutions(model, tokenizer, prompt: str, starter_code: str,
-                       num_samples: int = 8, temperature: float = 0.8,
-                       max_new_tokens: int = 2048) -> list[str]:
-    """Generate num_samples solutions in a single batched call."""
-    import torch
-
+def _build_chat_text(tokenizer, prompt: str, starter_code: str) -> str:
+    """Build the full chat-template string for a single puzzle."""
     user_msg = f"{prompt}\n\nComplete this function:\n\n{starter_code}"
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "user", "content": user_msg},
     ]
-    text = tokenizer.apply_chat_template(
+    return tokenizer.apply_chat_template(
         messages, tokenize=False, add_generation_prompt=True,
     )
+
+
+def generate_solutions(model, tokenizer, prompt: str, starter_code: str,
+                       num_samples: int = 8, temperature: float = 0.8,
+                       max_new_tokens: int = 2048) -> list[str]:
+    """Generate num_samples solutions for a single puzzle."""
+    import torch
+
+    text = _build_chat_text(tokenizer, prompt, starter_code)
     inputs = tokenizer(text, return_tensors="pt").to(model.device)
 
     with torch.no_grad():
@@ -311,6 +316,67 @@ def generate_solutions(model, tokenizer, prompt: str, starter_code: str,
         decoded = tokenizer.decode(seq[input_len:], skip_special_tokens=True)
         results.append(decoded)
     return results
+
+
+def generate_solutions_batch(
+    model, tokenizer, puzzles: list[dict],
+    num_samples: int = 8, temperature: float = 0.8,
+    max_new_tokens: int = 2048,
+) -> list[list[str]]:
+    """Generate solutions for multiple puzzles in one batched GPU call.
+
+    Left-pads inputs so they can be batched, runs model.generate() once
+    with num_return_sequences, then splits outputs back per puzzle.
+    Returns list-of-lists: outer = puzzles, inner = samples.
+    """
+    import torch
+
+    if not puzzles:
+        return []
+    if len(puzzles) == 1:
+        return [generate_solutions(
+            model, tokenizer, puzzles[0]["prompt"], puzzles[0]["starter_code"],
+            num_samples=num_samples, temperature=temperature,
+            max_new_tokens=max_new_tokens,
+        )]
+
+    texts = [_build_chat_text(tokenizer, p["prompt"], p["starter_code"])
+             for p in puzzles]
+
+    orig_padding_side = tokenizer.padding_side
+    tokenizer.padding_side = "left"
+    if tokenizer.pad_token_id is None:
+        tokenizer.pad_token_id = tokenizer.eos_token_id
+
+    inputs = tokenizer(texts, return_tensors="pt", padding=True).to(model.device)
+    input_len = inputs["input_ids"].shape[1]
+
+    with torch.no_grad():
+        outputs = model.generate(
+            **inputs,
+            max_new_tokens=max_new_tokens,
+            temperature=temperature,
+            top_p=0.95,
+            do_sample=True,
+            num_return_sequences=num_samples,
+            pad_token_id=tokenizer.eos_token_id,
+        )
+
+    tokenizer.padding_side = orig_padding_side
+
+    # outputs shape: [B * num_samples, seq_len]. First num_samples rows are
+    # for puzzle 0, next num_samples for puzzle 1, etc.
+    all_results: list[list[str]] = []
+    for i in range(len(puzzles)):
+        puzzle_results = []
+        for j in range(num_samples):
+            seq_idx = i * num_samples + j
+            decoded = tokenizer.decode(
+                outputs[seq_idx][input_len:], skip_special_tokens=True)
+            puzzle_results.append(decoded)
+        all_results.append(puzzle_results)
+
+    return all_results
 
 
 # ---------------------------------------------------------------------------
@@ -342,39 +408,47 @@ def run_eval(
     timeout: int = 30,
     temperature: float = 0.8,
 ) -> list[Rollout]:
+    from concurrent.futures import ThreadPoolExecutor
+
     all_rollouts: list[Rollout] = []
     total = len(puzzles)
 
-    for i, puzzle in enumerate(puzzles):
-        pid = puzzle["puzzle_id"]
-        diff = puzzle["difficulty"]
-        cat = puzzle.get("category", "")
-        label = f"{diff}, {cat}" if cat else diff
-        print(f"[{i+1}/{total}] {pid} ({label})", flush=True)
+    with ThreadPoolExecutor(max_workers=num_samples) as test_pool:
+        for i, puzzle in enumerate(puzzles):
+            pid = puzzle["puzzle_id"]
+            diff = puzzle["difficulty"]
+            cat = puzzle.get("category", "")
+            label = f"{diff}, {cat}" if cat else diff
+            print(f"[{i+1}/{total}] {pid} ({label})", flush=True)
 
-        try:
-            raw_responses = generate_solutions(
-                model, tokenizer, puzzle["prompt"], puzzle["starter_code"],
-                num_samples=num_samples, temperature=temperature,
-            )
-        except Exception as e:
-            print(f"  Generation error: {e}", flush=True)
-            raw_responses = [f"# GENERATION ERROR: {e}"] * num_samples
+            try:
+                raw_responses = generate_solutions(
+                    model, tokenizer, puzzle["prompt"], puzzle["starter_code"],
+                    num_samples=num_samples, temperature=temperature,
+                )
+            except Exception as e:
+                print(f"  Generation error: {e}", flush=True)
+                raw_responses = [f"# GENERATION ERROR: {e}"] * num_samples
 
-        puzzle_rollouts: list[Rollout] = []
-        for j, raw in enumerate(raw_responses):
-            code = extract_code(raw)
-            rollout = build_rollout(puzzle, j, code, timeout)
-            puzzle_rollouts.append(rollout)
-            tag = "PASS" if rollout.passed else rollout.error_type
-            print(f"  [{j+1}/{num_samples}] {tag:14s}  "
-                  f"vis={rollout.visible_passed}/{rollout.visible_total} "
-                  f"hid={rollout.hidden_passed}/{rollout.hidden_total} "
-                  f"({rollout.execution_time_ms}ms)", flush=True)
+            codes = [extract_code(raw) for raw in raw_responses]
+            futures = [
+                (j, test_pool.submit(build_rollout, puzzle, j, code, timeout))
+                for j, code in enumerate(codes)
+            ]
 
-        passes = sum(1 for r in puzzle_rollouts if r.passed)
-        print(f"  → {passes}/{num_samples} pass\n", flush=True)
-        all_rollouts.extend(puzzle_rollouts)
+            puzzle_rollouts: list[Rollout] = []
+            for j, fut in futures:
+                rollout = fut.result()
+                puzzle_rollouts.append(rollout)
+                tag = "PASS" if rollout.passed else rollout.error_type
+                print(f"  [{j+1}/{num_samples}] {tag:14s}  "
+                      f"vis={rollout.visible_passed}/{rollout.visible_total} "
+                      f"hid={rollout.hidden_passed}/{rollout.hidden_total} "
+                      f"({rollout.execution_time_ms}ms)", flush=True)
+
+            passes = sum(1 for r in puzzle_rollouts if r.passed)
+            print(f"  → {passes}/{num_samples} pass\n", flush=True)
+            all_rollouts.extend(puzzle_rollouts)
 
     return all_rollouts
 
