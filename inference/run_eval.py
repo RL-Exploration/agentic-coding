@@ -61,6 +61,9 @@ MODEL_REGISTRY = {
 # Conservative defaults — safe on L40S 48GB with max_new_tokens=2048
 DEFAULT_BATCH_PUZZLES = {"0.5B": 8, "1.5B": 4, "3B": 4}
 
+# Tight timeouts — 0.5B/1.5B code is short; 30s wastes huge time on infinite loops
+DEFAULT_TIMEOUT = {"0.5B": 5, "1.5B": 5, "3B": 10}
+
 K_VALUES = [1, 2, 4, 8]
 
 
@@ -111,7 +114,7 @@ def eval_model(
 ) -> list[Rollout]:
     """Load a model, run batched inference + parallel tests, then free GPU.
 
-    batch_puzzles=0 means auto-detect from model_tag.
+    batch_puzzles=0 and timeout=0 mean auto-detect from model_tag.
     """
     import time as _time
     import torch
@@ -119,11 +122,13 @@ def eval_model(
 
     if batch_puzzles <= 0:
         batch_puzzles = DEFAULT_BATCH_PUZZLES.get(model_tag, 4)
+    if timeout <= 0:
+        timeout = DEFAULT_TIMEOUT.get(model_tag, 10)
 
     print(f"\n{'='*70}")
     print(f"  MODEL: {model_tag} ({model_id})")
     print(f"  Puzzles: {len(puzzles)}  Samples: {num_samples}  "
-          f"Temp: {temperature}  Batch: {batch_puzzles}")
+          f"Temp: {temperature}  Batch: {batch_puzzles}  Timeout: {timeout}s")
     print(f"{'='*70}\n")
 
     model, tokenizer = load_model(model_id, device=device)
@@ -529,7 +534,9 @@ def main():
         help="Model sizes to evaluate (default: 0.5B 1.5B 3B)")
     parser.add_argument("--samples", type=int, default=8,
                         help="Rollouts per puzzle (default: 8)")
-    parser.add_argument("--timeout", type=int, default=30)
+    parser.add_argument("--timeout", type=int, default=0,
+                        help="Test timeout seconds (0=auto: 5s for 0.5B/1.5B, "
+                             "10s for 3B)")
     parser.add_argument("--temperature", type=float, default=1.0,
                         help="Sampling temperature (default: 1.0)")
     parser.add_argument("--batch-puzzles", type=int, default=0,
