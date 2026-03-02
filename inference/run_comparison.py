@@ -69,12 +69,7 @@ def run_single_eval(
     print(report)
 
     print(f"\nSaving {label} artifacts to {output_dir}/")
-    save_artifacts(rollouts, views, output_dir)
-
-    report_path = os.path.join(output_dir, "report.txt")
-    with open(report_path, "w") as f:
-        f.write(report)
-    print(f"  report.txt                  -> {report_path}")
+    save_artifacts(rollouts, views, output_dir, model=model_name, report=report)
 
     return rollouts, views
 
@@ -228,6 +223,158 @@ def comparison_report(
     return "\n".join(lines)
 
 
+def _summarize_set(views: dict, k: int) -> dict:
+    """Build per-set analytics from compute_views output."""
+    ps = views.get("puzzle_summaries", [])
+    n = len(ps)
+    if n == 0:
+        return {"n_puzzles": 0}
+
+    pk_key = f"pass_at_{k}"
+    zones = views.get("advantage_spread", {}).get("zones", {})
+
+    learning_puzzles = [p for p in ps if p["zone"] == "learning"]
+    dead_puzzles = [p for p in ps if p["zone"] == "dead"]
+    saturated_puzzles = [p for p in ps if p["zone"] == "saturated"]
+
+    return {
+        "n_puzzles": n,
+        "pass_at_1": round(sum(p["pass_at_1"] for p in ps) / n, 4),
+        f"pass_at_{k}": round(sum(p.get(pk_key, 0) for p in ps) / n, 4),
+        "mean_test_pass_rate": round(sum(p["mean_test_pass_rate"] for p in ps) / n, 4),
+        "mean_grpo_variance": round(sum(p["advantage_variance"] for p in ps) / n, 4),
+        "zones": {
+            "learning": zones.get("learning", 0),
+            "dead": zones.get("dead", 0),
+            "saturated": zones.get("saturated", 0),
+        },
+        "per_puzzle": [
+            {
+                "puzzle_id": p["puzzle_id"],
+                "category": p.get("category", ""),
+                "difficulty": p["difficulty"],
+                "pass_at_1": p["pass_at_1"],
+                "grpo_variance": p["advantage_variance"],
+                "zone": p["zone"],
+                "mean_test_pass_rate": p["mean_test_pass_rate"],
+                "visible_pass_rate": p["visible_pass_rate"],
+                "hidden_pass_rate": p["hidden_pass_rate"],
+                "dominant_error": p["dominant_error"],
+            }
+            for p in sorted(ps, key=lambda p: -p["advantage_variance"])
+        ],
+    }
+
+
+def _category_analytics(views: dict, k: int) -> dict:
+    """Build per-category breakdown with RL-relevant metrics."""
+    cat_view = views.get("category", {})
+    ps = views.get("puzzle_summaries", [])
+    pk_key = f"pass_at_{k}"
+
+    result = {}
+    for cat, cv in cat_view.items():
+        cat_puzzles = [p for p in ps if p.get("category") == cat]
+        cat_puzzles.sort(key=lambda p: -p["advantage_variance"])
+        learning = [p for p in cat_puzzles if p["zone"] == "learning"]
+
+        result[cat] = {
+            "n_puzzles": cv["count"],
+            "pass_at_1": round(cv["pass_at_1"], 4),
+            f"pass_at_{k}": round(cv.get(pk_key, 0), 4),
+            "mean_test_pass_rate": round(cv["mean_test_pass_rate"], 4),
+            "mean_grpo_variance": round(cv["advantage_variance"], 4),
+            "learning_zone_count": cv["learning_zone"],
+            "learning_zone_pct": round(cv["learning_zone"] / cv["count"], 4) if cv["count"] else 0,
+            "rl_recommendation": (
+                "strong_signal" if cv["learning_zone"] / cv["count"] >= 0.5 else
+                "some_signal" if cv["learning_zone"] > 0 else
+                "saturated" if cv["pass_at_1"] > 0.9 else
+                "too_hard"
+            ),
+            "puzzles_ranked_by_grpo": [
+                {
+                    "puzzle_id": p["puzzle_id"],
+                    "pass_at_1": p["pass_at_1"],
+                    "grpo_variance": p["advantage_variance"],
+                    "zone": p["zone"],
+                }
+                for p in cat_puzzles
+            ],
+        }
+    return result
+
+
+def build_analytics_json(
+    easy_views: dict,
+    humaneval_views: dict,
+    model_name: str,
+    k: int,
+) -> dict:
+    """Build a comprehensive analytics JSON for downstream RL pipeline consumption."""
+    easy_summary = _summarize_set(easy_views, k)
+    he_summary = _summarize_set(humaneval_views, k)
+
+    easy_cats = _category_analytics(easy_views, k)
+
+    all_learning = []
+    for src, views in [("easy", easy_views), ("humaneval", humaneval_views)]:
+        for p in views.get("puzzle_summaries", []):
+            if p["zone"] == "learning":
+                all_learning.append({
+                    "puzzle_id": p["puzzle_id"],
+                    "source": src,
+                    "category": p.get("category", ""),
+                    "pass_at_1": p["pass_at_1"],
+                    "grpo_variance": p["advantage_variance"],
+                })
+    all_learning.sort(key=lambda x: -x["grpo_variance"])
+
+    easy_n = easy_summary.get("n_puzzles", 0)
+    he_n = he_summary.get("n_puzzles", 0)
+    easy_lz = easy_summary.get("zones", {}).get("learning", 0)
+    he_lz = he_summary.get("zones", {}).get("learning", 0)
+
+    return {
+        "meta": {
+            "model": model_name,
+            "samples_per_puzzle": k,
+            "timestamp": datetime.now().isoformat(),
+        },
+        "overall": {
+            "easy": easy_summary,
+            "humaneval": he_summary,
+        },
+        "categories": easy_cats,
+        "rl_training_pool": {
+            "total_learning_zone": len(all_learning),
+            "from_easy": sum(1 for x in all_learning if x["source"] == "easy"),
+            "from_humaneval": sum(1 for x in all_learning if x["source"] == "humaneval"),
+            "mean_grpo_variance": round(
+                sum(x["grpo_variance"] for x in all_learning) / len(all_learning), 4
+            ) if all_learning else 0,
+            "puzzles": all_learning,
+        },
+        "recommendation": {
+            "best_set": (
+                "easy" if easy_lz > he_lz else
+                "humaneval" if he_lz > easy_lz else
+                "blend"
+            ),
+            "easy_learning_pct": round(easy_lz / easy_n, 4) if easy_n else 0,
+            "humaneval_learning_pct": round(he_lz / he_n, 4) if he_n else 0,
+            "category_gaps": [
+                cat for cat, data in easy_cats.items()
+                if data["rl_recommendation"] in ("too_hard", "saturated")
+            ],
+            "category_strengths": [
+                cat for cat, data in easy_cats.items()
+                if data["rl_recommendation"] == "strong_signal"
+            ],
+        },
+    }
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Compare easy puzzles vs HumanEval+ for RL training"
@@ -290,6 +437,12 @@ def main():
     with open(report_path, "w") as f:
         f.write(report)
     print(f"\nComparison report saved to {report_path}")
+
+    analytics = build_analytics_json(easy_views, humaneval_views, args.model, k)
+    analytics_path = os.path.join(base_output, "analytics.json")
+    with open(analytics_path, "w") as f:
+        json.dump(analytics, f, indent=2)
+    print(f"Analytics JSON saved to {analytics_path}")
 
 
 if __name__ == "__main__":

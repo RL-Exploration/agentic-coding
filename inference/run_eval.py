@@ -661,7 +661,8 @@ def format_report(views: dict, model: str, k: int) -> str:
 # Save artifacts (per eval_plan.md output spec)
 # ---------------------------------------------------------------------------
 
-def save_artifacts(rollouts: list[Rollout], views: dict, output_dir: str):
+def save_artifacts(rollouts: list[Rollout], views: dict, output_dir: str,
+                   model: str = "", report: str = ""):
     os.makedirs(output_dir, exist_ok=True)
 
     # raw_rollouts.jsonl — one line per (puzzle, rollout)
@@ -682,6 +683,40 @@ def save_artifacts(rollouts: list[Rollout], views: dict, output_dir: str):
     with open(path, "w") as f:
         json.dump(views["rl_targets"], f, indent=2)
     print(f"  rl_targets_ranked.json      → {path}")
+
+    # eval_analytics.json — full structured analytics
+    ps = views["puzzle_summaries"]
+    n = len(ps)
+    k_key = [k for k in ps[0] if k.startswith("pass_at_") and k != "pass_at_1"][0] if ps else "pass_at_8"
+    zones = views.get("advantage_spread", {}).get("zones", {})
+
+    analytics = {
+        "meta": {
+            "model": model,
+            "n_puzzles": n,
+            "timestamp": datetime.now().isoformat(),
+        },
+        "overall": {
+            "pass_at_1": round(sum(p["pass_at_1"] for p in ps) / n, 4) if n else 0,
+            "mean_test_pass_rate": round(sum(p["mean_test_pass_rate"] for p in ps) / n, 4) if n else 0,
+            "mean_grpo_variance": round(sum(p["advantage_variance"] for p in ps) / n, 4) if n else 0,
+            "zones": dict(zones),
+        },
+        "categories": views.get("category", {}),
+        "difficulty": views.get("difficulty", {}),
+        "per_puzzle": views["puzzle_summaries"],
+        "rl_targets": views["rl_targets"],
+    }
+    path = os.path.join(output_dir, "eval_analytics.json")
+    with open(path, "w") as f:
+        json.dump(analytics, f, indent=2)
+    print(f"  eval_analytics.json         → {path}")
+
+    if report:
+        path = os.path.join(output_dir, "report.txt")
+        with open(path, "w") as f:
+            f.write(report)
+        print(f"  report.txt                  -> {path}")
 
 
 # ---------------------------------------------------------------------------
@@ -768,7 +803,7 @@ def main():
     print(report)
 
     print(f"\nSaving artifacts to {output_dir}/")
-    save_artifacts(rollouts, views, output_dir)
+    save_artifacts(rollouts, views, output_dir, model=args.model, report=report)
     print("\nDone.")
 
 
