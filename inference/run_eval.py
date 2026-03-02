@@ -541,7 +541,8 @@ def compute_views(rollouts: list[Rollout], k: int) -> dict[str, Any]:
 
     # ── Difficulty breakdown ──
     difficulty_view: dict[str, dict] = {}
-    for diff in ["Easy", "Medium", "Hard"]:
+    all_difficulties = sorted(set(p["difficulty"] for p in puzzle_summaries))
+    for diff in all_difficulties:
         pss = [p for p in puzzle_summaries if p["difficulty"] == diff]
         if not pss:
             continue
@@ -575,7 +576,8 @@ def compute_views(rollouts: list[Rollout], k: int) -> dict[str, Any]:
 
     # ── Skill family radar ──
     family_view: dict[str, dict] = {}
-    for fam in SKILL_FAMILIES:
+    all_families = sorted(set(p["skill_family"] for p in puzzle_summaries))
+    for fam in all_families:
         pss = [p for p in puzzle_summaries if p["skill_family"] == fam]
         if not pss:
             continue
@@ -700,15 +702,13 @@ def format_report(views: dict, model: str, k: int) -> str:
     # ── Difficulty breakdown ──
     section("DIFFICULTY BREAKDOWN")
     dv = views["difficulty"]
-    lines.append(f"  {'Diff':<8} {'#':>3} {'P@1':>6} {'P@k':>6} {'Test%':>6} "
+    lines.append(f"  {'Diff':<12} {'#':>3} {'P@1':>6} {'P@k':>6} {'Test%':>6} "
                  f"{'Vis%':>6} {'Hid%':>6} {'Gap':>6} {'LrnZone':>8}")
     lines.append("  " + "─" * (W - 4))
-    for diff in ["Easy", "Medium", "Hard"]:
-        dd = dv.get(diff)
-        if not dd:
-            continue
+    for diff in dv:
+        dd = dv[diff]
         lines.append(
-            f"  {diff:<8} {dd['count']:>3} {dd['pass_at_1']*100:5.1f}% "
+            f"  {diff:<12} {dd['count']:>3} {dd['pass_at_1']*100:5.1f}% "
             f"{dd[pk_key]*100:5.1f}% {dd['mean_test_pass_rate']*100:5.1f}% "
             f"{dd['visible_pass_rate']*100:5.1f}% {dd['hidden_pass_rate']*100:5.1f}% "
             f"{dd['hidden_gap']*100:+5.1f}% "
@@ -744,8 +744,11 @@ def format_report(views: dict, model: str, k: int) -> str:
     # ── Skill family radar ──
     section("SKILL FAMILY RADAR")
     fv = views["skill_families"]
-    lines.append(f"  {'Family':<40} {'#':>3} {'P@1':>5} {'P@k':>5} {'Test%':>5} {'Lrn':>4}")
-    lines.append("  " + "─" * (W - 4))
+    if fv:
+        lines.append(f"  {'Family':<40} {'#':>3} {'P@1':>5} {'P@k':>5} {'Test%':>5} {'Lrn':>4}")
+        lines.append("  " + "─" * (W - 4))
+    else:
+        lines.append("  (No skill family metadata for this puzzle set)")
     for fname in sorted(fv, key=lambda f: -fv[f]["mean_test_pass_rate"]):
         fd = fv[fname]
         lines.append(
@@ -852,8 +855,8 @@ def load_rollouts(path: str) -> list[Rollout]:
 
 def main():
     parser = argparse.ArgumentParser(description="RL Coding Puzzle Evaluation")
-    parser.add_argument("--model", default="Qwen/Qwen2.5-Coder-14B-Instruct",
-                        help="HuggingFace model ID (default: Qwen/Qwen2.5-Coder-14B-Instruct)")
+    parser.add_argument("--model", default="Qwen/Qwen2.5-Coder-3B-Instruct",
+                        help="HuggingFace model ID (default: Qwen/Qwen2.5-Coder-3B-Instruct)")
     parser.add_argument("--device", default="auto",
                         help="Device map for model loading (default: auto)")
     parser.add_argument("--puzzle-dir", default=None,
