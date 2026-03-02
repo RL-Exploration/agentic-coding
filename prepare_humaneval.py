@@ -148,12 +148,22 @@ def convert_problem(problem: dict) -> dict:
     }
 
 
+CURATED_20 = [
+    1, 5, 6, 8, 10, 13, 17, 18, 19, 20,
+    25, 26, 31, 36, 40, 44, 46, 57, 59, 69,
+]
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Convert HumanEval+ problems to puzzle JSON format"
     )
     parser.add_argument("--count", type=int, default=50,
-                        help="Number of problems to convert (default: 50)")
+                        help="Number of problems to convert (default: 50, ignored if --indices used)")
+    parser.add_argument("--indices", type=str, default=None,
+                        help="Comma-separated HumanEval problem indices (e.g. '1,5,6,8')")
+    parser.add_argument("--curated20", action="store_true",
+                        help="Use curated 20-problem set balanced for 1.5B eval")
     parser.add_argument("--output-dir", type=str, default="puzzles_humaneval",
                         help="Output directory (default: puzzles_humaneval)")
     args = parser.parse_args()
@@ -162,14 +172,26 @@ def main():
     problems = load_humaneval_plus()
     print(f"Loaded {len(problems)} problems.")
 
-    problems.sort(key=lambda p: extract_task_number(p["task_id"]))
-    selected = problems[:args.count]
+    by_num = {extract_task_number(p["task_id"]): p for p in problems}
+
+    if args.curated20:
+        indices = CURATED_20
+        print(f"Using curated 20-problem set: {indices}")
+    elif args.indices:
+        indices = [int(x.strip()) for x in args.indices.split(",")]
+        print(f"Using specified indices: {indices}")
+    else:
+        indices = sorted(by_num.keys())[:args.count]
 
     os.makedirs(args.output_dir, exist_ok=True)
 
     converted = 0
-    for i, problem in enumerate(selected):
-        task_num = extract_task_number(problem["task_id"])
+    total = len(indices)
+    for i, num in enumerate(indices):
+        if num not in by_num:
+            print(f"  WARNING: HumanEval/{num} not found, skipping")
+            continue
+        problem = by_num[num]
         idx = i + 1
         puzzle = convert_problem(problem)
 
@@ -180,7 +202,7 @@ def main():
         with open(path, "w") as f:
             json.dump(puzzle, f, indent=2)
 
-        print(f"  [{idx:>3}/{args.count}] {problem['task_id']:>15s} -> {filename}")
+        print(f"  [{idx:>3}/{total}] {problem['task_id']:>15s} -> {filename}")
         converted += 1
 
     print(f"\nDone. Converted {converted} problems to {args.output_dir}/")

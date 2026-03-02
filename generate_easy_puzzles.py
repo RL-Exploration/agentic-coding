@@ -246,6 +246,7 @@ def generate_one(
             with client.messages.stream(
                 model="claude-opus-4-6",
                 max_tokens=16384,
+                timeout=300,
                 system=SYSTEM_PROMPT,
                 messages=[{"role": "user", "content": user_msg}],
             ) as stream:
@@ -311,7 +312,7 @@ def main():
         print("Error: ANTHROPIC_API_KEY not set. Create a .env file or export it.")
         return
 
-    client = anthropic.Anthropic()
+    client = anthropic.Anthropic(timeout=300.0)
     os.makedirs(args.puzzle_dir, exist_ok=True)
 
     existing = scan_existing_puzzles(args.puzzle_dir)
