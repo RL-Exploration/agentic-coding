@@ -61,8 +61,8 @@ MODEL_REGISTRY = {
 # Conservative defaults — safe on L40S 48GB with max_new_tokens=2048
 DEFAULT_BATCH_PUZZLES = {"0.5B": 8, "1.5B": 4, "3B": 4}
 
-# Tight timeouts — 0.5B/1.5B code is short; 30s wastes huge time on infinite loops
-DEFAULT_TIMEOUT = {"0.5B": 5, "1.5B": 5, "3B": 10}
+# Tight timeouts — correct solutions finish in <100ms; anything over 3s is broken
+DEFAULT_TIMEOUT = {"0.5B": 3, "1.5B": 3, "3B": 5}
 
 K_VALUES = [1, 2, 4, 8]
 
@@ -535,8 +535,8 @@ def main():
     parser.add_argument("--samples", type=int, default=8,
                         help="Rollouts per puzzle (default: 8)")
     parser.add_argument("--timeout", type=int, default=0,
-                        help="Test timeout seconds (0=auto: 5s for 0.5B/1.5B, "
-                             "10s for 3B)")
+                        help="Test timeout seconds (0=auto: 3s for 0.5B/1.5B, "
+                             "5s for 3B)")
     parser.add_argument("--temperature", type=float, default=1.0,
                         help="Sampling temperature (default: 1.0)")
     parser.add_argument("--batch-puzzles", type=int, default=0,
