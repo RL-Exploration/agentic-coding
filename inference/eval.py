@@ -1,29 +1,32 @@
 #!/usr/bin/env python3
-"""Main RL Coding Puzzle Evaluation Pipeline.
+"""RL Coding Puzzle Evaluation Pipeline.
 
-Runs one or more Qwen2.5-Coder models against puzzle sets.  For each model it
-produces the full category breakdown, GRPO variance ranking, and RL target
-prioritisation.  When multiple models are requested it also computes pass@k
-scaling curves (k=1,2,4,8) and a cross-model zone-migration analysis that
-shows how puzzles shift between dead/learning/saturated as model size grows.
+Two modes:
 
-Accepts one or more puzzle directories so you can combine easy + humaneval.
+  Default (multi-model scaling):
+    Runs 0.5B/1.5B/3B sequentially, produces per-model category breakdown,
+    GRPO variance ranking, RL targets, pass@k scaling curves (k=1,2,4,8),
+    and cross-model zone migration. This is what run_eval.sh calls.
+
+  --quick (single-model verbose):
+    Runs one model with full per-rollout output (vis/hid test counts).
+    Good for sanity-checking a single puzzle dir or new puzzle batch.
 
 Usage:
-    # Full 3-model evaluation on all puzzles (default)
-    python run_eval.py
+    # Full 3-model evaluation on both puzzle dirs (default, called by run_eval.sh)
+    python eval.py
 
-    # Single model quick check
-    python run_eval.py --models 1.5B --puzzle-dir ../puzzles_easy
+    # Quick sanity check — single model, verbose output
+    python eval.py --quick --models 1.5B --puzzle-dir ../puzzles_easy
 
-    # Only easy puzzles, two models
-    python run_eval.py --models 1.5B 3B --puzzle-dir ../puzzles_easy
+    # Subset of models
+    python eval.py --models 1.5B 3B
 
     # Re-plot from saved results (skip inference)
-    python run_eval.py --plot-only
+    python eval.py --plot-only
 
     # Re-analyze existing rollouts (skip inference)
-    python run_eval.py --analyze-dir ../eval_results
+    python eval.py --analyze-dir ../eval_results
 """
 
 from __future__ import annotations
@@ -49,6 +52,7 @@ from eval_core import (
     load_puzzles,
     load_rollouts,
     pass_at_k,
+    run_eval as run_eval_verbose,
     save_artifacts,
 )
 
@@ -522,6 +526,10 @@ def main():
                     "with category analysis, GRPO variance, and RL targets"
     )
     parser.add_argument(
+        "--quick", action="store_true",
+        help="Single-model verbose mode: prints vis/hid test counts per rollout. "
+             "Good for sanity-checking a new puzzle batch. Uses --models[0].")
+    parser.add_argument(
         "--puzzle-dir", nargs="+", default=None,
         help="One or more puzzle directories "
              "(default: ../puzzles_easy ../puzzles_humaneval)")
@@ -557,6 +565,33 @@ def main():
         str(script_dir.parent / "puzzles_humaneval"),
     ]
     output_dir = args.output_dir or str(script_dir.parent / "eval_results")
+
+    # --quick: single-model, verbose per-rollout output (vis/hid counts)
+    if args.quick:
+        model_tag = args.models[0]
+        model_id = MODEL_REGISTRY[model_tag]
+        timeout = args.timeout or DEFAULT_TIMEOUT.get(model_tag, 5)
+        puzzles = load_puzzles_multi(puzzle_dirs)
+        if not puzzles:
+            print(f"No puzzles found in {puzzle_dirs}")
+            sys.exit(1)
+        print(f"[quick] {len(puzzles)} puzzles | {model_id} | "
+              f"samples={args.samples} temp={args.temperature} timeout={timeout}s\n")
+        model, tokenizer = load_model(model_id, device=args.device)
+        rollouts = run_eval_verbose(
+            puzzles, model, tokenizer,
+            num_samples=args.samples, timeout=timeout,
+            temperature=args.temperature,
+        )
+        del model, tokenizer
+        views = compute_views(rollouts, args.samples)
+        report = format_report(views, model_id, args.samples)
+        print(report)
+        quick_dir = os.path.join(output_dir, "quick")
+        print(f"\nSaving artifacts to {quick_dir}/")
+        save_artifacts(rollouts, views, quick_dir, model=model_id, report=report)
+        print("Done.")
+        return
 
     # --plot-only: just regenerate the chart from scaling_summary.json
     if args.plot_only:

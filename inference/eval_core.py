@@ -1,25 +1,14 @@
 #!/usr/bin/env python3
-"""RL Coding Puzzle Evaluation Pipeline.
+"""Shared evaluation library for RL Coding Puzzle pipeline.
 
-Single inference run (Run 1 from eval_plan.md): generate k rollouts per puzzle,
-execute against unit tests, then compute all aggregation views offline.
-
-Uses HuggingFace transformers model.generate() directly (no vLLM dependency).
-
-Usage:
-    # Full run (inference + tests + analytics)
-    python run_eval.py
-
-    # Re-run analytics on existing results
-    python run_eval.py --analyze eval_results/raw_rollouts.jsonl
-
-    # Custom sampling
-    python run_eval.py --samples 8 --timeout 30
+Not meant to be run directly — imported by eval.py.
+Contains: Rollout dataclass, test harness, model loading, generate_solutions,
+          generate_solutions_batch, run_eval (verbose single-model loop),
+          compute_views, format_report, save_artifacts, load_rollouts.
 """
 
 from __future__ import annotations
 
-import argparse
 import json
 import math
 import os
@@ -821,65 +810,3 @@ def load_rollouts(path: str) -> list[Rollout]:
     return rollouts
 
 
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
-
-def main():
-    parser = argparse.ArgumentParser(description="RL Coding Puzzle Evaluation")
-    parser.add_argument("--model", default="Qwen/Qwen2.5-Coder-1.5B-Instruct",
-                        help="HuggingFace model ID (default: Qwen/Qwen2.5-Coder-1.5B-Instruct)")
-    parser.add_argument("--device", default="auto",
-                        help="Device map for model loading (default: auto)")
-    parser.add_argument("--puzzle-dir", default=None,
-                        help="Puzzle directory (default: ../puzzles)")
-    parser.add_argument("--samples", type=int, default=8,
-                        help="Rollouts per puzzle (default: 8)")
-    parser.add_argument("--timeout", type=int, default=5,
-                        help="Test execution timeout in seconds (default: 5)")
-    parser.add_argument("--temperature", type=float, default=0.8)
-    parser.add_argument("--output-dir", default=None,
-                        help="Output directory (default: ../eval_results)")
-    parser.add_argument("--analyze", metavar="ROLLOUTS_JSONL",
-                        help="Skip inference; re-analyze existing raw_rollouts.jsonl")
-    args = parser.parse_args()
-
-    script_dir = Path(__file__).parent
-    puzzle_dir = args.puzzle_dir or str(script_dir.parent / "puzzles")
-    output_dir = args.output_dir or str(script_dir.parent / "eval_results")
-    k = args.samples
-
-    if args.analyze:
-        print(f"Loading rollouts from {args.analyze}...")
-        rollouts = load_rollouts(args.analyze)
-        n_puzzles = len(set(r.puzzle_num for r in rollouts))
-        k = len(rollouts) // n_puzzles if n_puzzles else k
-        print(f"  {len(rollouts)} rollouts across {n_puzzles} puzzles ({k}/puzzle)\n")
-    else:
-        puzzles = load_puzzles(puzzle_dir)
-        if not puzzles:
-            print(f"No puzzles found in {puzzle_dir}")
-            sys.exit(1)
-        print(f"Loaded {len(puzzles)} puzzles from {puzzle_dir}")
-        print(f"Model: {args.model}")
-        print(f"Samples: {k}  |  Temperature: {args.temperature}  |  Timeout: {args.timeout}s")
-        print()
-
-        model, tokenizer = load_model(args.model, device=args.device)
-        rollouts = run_eval(
-            puzzles, model, tokenizer,
-            num_samples=k, timeout=args.timeout,
-            temperature=args.temperature,
-        )
-
-    views = compute_views(rollouts, k)
-    report = format_report(views, args.model, k)
-    print(report)
-
-    print(f"\nSaving artifacts to {output_dir}/")
-    save_artifacts(rollouts, views, output_dir, model=args.model, report=report)
-    print("\nDone.")
-
-
-if __name__ == "__main__":
-    main()

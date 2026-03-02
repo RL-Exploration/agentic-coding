@@ -59,7 +59,7 @@ echo "  Temperature: $TEMPERATURE"
 echo ""
 
 cd inference
-python run_eval.py \
+python eval.py \
     --puzzle-dir $DIR_ARGS \
     --models $MODEL_ARGS \
     --output-dir ../eval_results \
