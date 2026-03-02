@@ -20,7 +20,7 @@ def main():
     parser.add_argument("--device", default="auto",
                         help="Device map (default: auto)")
     parser.add_argument("--max-new-tokens", type=int, default=2048)
-    parser.add_argument("--temperature", type=float, default=0.7)
+    parser.add_argument("--temperature", type=float, default=0.8)
     args = parser.parse_args()
 
     import torch

@@ -67,7 +67,7 @@ python run_eval.py [--model MODEL] [--puzzle-dir DIR] [--samples K] [--analyze F
 | `--puzzle-dir` | `../puzzles` | Puzzle directory to evaluate |
 | `--samples` | `8` | Rollouts per puzzle (k for pass@k) |
 | `--timeout` | `30` | Test execution timeout (seconds) |
-| `--temperature` | `0.7` | Sampling temperature |
+| `--temperature` | `0.8` | Sampling temperature |
 | `--output-dir` | `../eval_results` | Where to save results |
 | `--analyze` | -- | Re-run analytics on existing `raw_rollouts.jsonl` |
 
@@ -83,7 +83,7 @@ python run_comparison.py [--model MODEL] [--samples K] [--analyze-only]
 | `--device` | `auto` | Device map for model loading |
 | `--samples` | `8` | Rollouts per puzzle |
 | `--timeout` | `30` | Test execution timeout (seconds) |
-| `--temperature` | `0.7` | Sampling temperature |
+| `--temperature` | `0.8` | Sampling temperature |
 | `--easy-dir` | `../puzzles_easy` | Easy puzzle directory |
 | `--humaneval-dir` | `../puzzles_humaneval` | HumanEval+ puzzle directory |
 | `--output-dir` | `../eval_results` | Base output directory |
@@ -100,7 +100,7 @@ python server.py [--model MODEL] [--device DEVICE] [--temperature T]
 | `--model` | `Qwen/Qwen2.5-Coder-1.5B-Instruct` | HuggingFace model ID |
 | `--device` | `auto` | Device map for model loading |
 | `--max-new-tokens` | `2048` | Max tokens to generate |
-| `--temperature` | `0.7` | Sampling temperature |
+| `--temperature` | `0.8` | Sampling temperature |
 
 ## Output Artifacts
 

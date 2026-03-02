@@ -276,7 +276,7 @@ def load_model(model_name: str, device: str = "auto"):
 
 
 def generate_solutions(model, tokenizer, prompt: str, starter_code: str,
-                       num_samples: int = 8, temperature: float = 0.7,
+                       num_samples: int = 8, temperature: float = 0.8,
                        max_new_tokens: int = 2048) -> list[str]:
     """Generate num_samples solutions in a single batched call."""
     import torch
@@ -337,7 +337,7 @@ def run_eval(
     tokenizer,
     num_samples: int = 8,
     timeout: int = 30,
-    temperature: float = 0.7,
+    temperature: float = 0.8,
 ) -> list[Rollout]:
     all_rollouts: list[Rollout] = []
     total = len(puzzles)
@@ -468,7 +468,7 @@ def compute_views(rollouts: list[Rollout], k: int) -> dict[str, Any]:
     zones = {"dead": 0, "learning": 0, "saturated": 0}
     for ps in puzzle_summaries:
         zones[ps["zone"]] += 1
-    advantage_ranked = sorted(puzzle_summaries, key=lambda p: -p["score_variance"])
+    advantage_ranked = sorted(puzzle_summaries, key=lambda p: -p["advantage_variance"])
 
     # ── RL target ranking (eval_plan.md priority 1/2/3) ──
     rl_targets: list[dict] = []
@@ -587,11 +587,11 @@ def format_report(views: dict, model: str, k: int) -> str:
     lines.append(f"  Saturated:      {zd['saturated']:>3}/{total_z}  "
                  f"({zd['saturated']/total_z*100:.0f}%)  ← Already mastered")
     lines.append("")
-    lines.append("  Top puzzles by score variance (best GRPO signal):")
+    lines.append("  Top puzzles by GRPO reward variance (p@1 * (1 - p@1)):")
     for j, p in enumerate(views["advantage_spread"]["ranked"][:10]):
-        bar = "█" * int(p["score_variance"] * 50)
+        bar = "█" * int(p["advantage_variance"] * 40)
         lines.append(f"    {j+1:>2}. {p['puzzle_id']:<32} {p['difficulty']:<6} "
-                     f"var={p['score_variance']:.3f} {bar}")
+                     f"p@1={p['pass_at_1']*100:4.0f}%  grpo={p['advantage_variance']:.3f} {bar}")
 
     # ── RL targets ──
     section("RL TRAINING TARGETS (Ranked)")
@@ -684,7 +684,7 @@ def main():
                         help="Rollouts per puzzle (default: 8)")
     parser.add_argument("--timeout", type=int, default=30,
                         help="Test execution timeout in seconds (default: 30)")
-    parser.add_argument("--temperature", type=float, default=0.7)
+    parser.add_argument("--temperature", type=float, default=0.8)
     parser.add_argument("--output-dir", default=None,
                         help="Output directory (default: ../eval_results)")
     parser.add_argument("--analyze", metavar="ROLLOUTS_JSONL",

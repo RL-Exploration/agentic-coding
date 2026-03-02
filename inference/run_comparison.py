@@ -169,7 +169,7 @@ def comparison_report(
         lines.append(f"  {elabel:<18} {ez_rate*100:12.1f}%  {he_rate*100:12.1f}%")
 
     # ── Top GRPO targets from each set ──
-    section("TOP 10 RL TARGETS (by advantage variance)")
+    section("TOP 10 RL TARGETS (by GRPO reward variance)")
     for label, views in [("Easy Puzzles", easy_views), ("HumanEval+", humaneval_views)]:
         ranked = views.get("advantage_spread", {}).get("ranked", [])
         learning = [p for p in ranked if p["zone"] == "learning"]
@@ -180,7 +180,7 @@ def comparison_report(
         for j, p in enumerate(learning[:10]):
             lines.append(
                 f"    {j+1:>2}. {p['puzzle_id']:<36} "
-                f"var={p['score_variance']:.3f}  "
+                f"grpo={p['advantage_variance']:.3f}  "
                 f"p@1={p['pass_at_1']*100:4.0f}%"
             )
 
@@ -236,7 +236,7 @@ def main():
     parser.add_argument("--device", default="auto")
     parser.add_argument("--samples", type=int, default=8)
     parser.add_argument("--timeout", type=int, default=30)
-    parser.add_argument("--temperature", type=float, default=0.7)
+    parser.add_argument("--temperature", type=float, default=0.8)
     parser.add_argument("--analyze-only", action="store_true",
                         help="Skip inference, re-analyze existing results")
 
