@@ -1,356 +1,94 @@
 #!/usr/bin/env python3
-"""RL Coding Puzzle Evaluation Pipeline.
+"""Main RL Coding Puzzle Evaluation Pipeline.
 
-Single inference run (Run 1 from eval_plan.md): generate k rollouts per puzzle,
-execute against unit tests, then compute all aggregation views offline.
+Runs one or more Qwen2.5-Coder models against puzzle sets.  For each model it
+produces the full category breakdown, GRPO variance ranking, and RL target
+prioritisation.  When multiple models are requested it also computes pass@k
+scaling curves (k=1,2,4,8) and a cross-model zone-migration analysis that
+shows how puzzles shift between dead/learning/saturated as model size grows.
 
-Uses HuggingFace transformers model.generate() directly (no vLLM dependency).
+Accepts one or more puzzle directories so you can combine easy + humaneval.
 
 Usage:
-    # Full run (inference + tests + analytics)
+    # Full 3-model evaluation on all puzzles (default)
     python run_eval.py
 
-    # Re-run analytics on existing results
-    python run_eval.py --analyze eval_results/raw_rollouts.jsonl
+    # Single model quick check
+    python run_eval.py --models 1.5B --puzzle-dir ../puzzles_easy
 
-    # Custom sampling
-    python run_eval.py --samples 8 --timeout 30
+    # Only easy puzzles, two models
+    python run_eval.py --models 1.5B 3B --puzzle-dir ../puzzles_easy
+
+    # Re-plot from saved results (skip inference)
+    python run_eval.py --plot-only
+
+    # Re-analyze existing rollouts (skip inference)
+    python run_eval.py --analyze-dir ../eval_results
 """
 
 from __future__ import annotations
 
 import argparse
+import gc
 import json
-import math
 import os
-import re
-import subprocess
 import sys
-import tempfile
-import time
 from collections import defaultdict
-from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any
 
-
-# ---------------------------------------------------------------------------
-# Prompting
-# ---------------------------------------------------------------------------
-
-SYSTEM_PROMPT = (
-    "You are a Python programming assistant. Complete the given function to solve "
-    "the problem. Output ONLY the complete Python function implementation. "
-    "Include any necessary imports above the function. Do not include test code, "
-    "explanations, or markdown formatting."
+from eval_core import (
+    Rollout,
+    build_rollout,
+    compute_views,
+    extract_code,
+    format_report,
+    generate_solutions,
+    load_model,
+    load_puzzles,
+    load_rollouts,
+    pass_at_k,
+    save_artifacts,
 )
 
-# ---------------------------------------------------------------------------
-# Test harness
-# ---------------------------------------------------------------------------
+MODEL_REGISTRY = {
+    "0.5B": "Qwen/Qwen2.5-Coder-0.5B-Instruct",
+    "1.5B": "Qwen/Qwen2.5-Coder-1.5B-Instruct",
+    "3B":   "Qwen/Qwen2.5-Coder-3B-Instruct",
+}
 
-_HARNESS = '''\
-import json, unittest, sys, time as _time
-
-# ========== SOLUTION ==========
-{solution_code}
-
-# ========== TESTS ==========
-{test_code}
-
-# ========== RUNNER ==========
-class _R(unittest.TestResult):
-    def __init__(self):
-        super().__init__()
-        self.d = []
-    def addSuccess(self, t):
-        super().addSuccess(t)
-        self.d.append({{"n": t.id().split(".")[-1], "s": "pass"}})
-    def addFailure(self, t, err):
-        super().addFailure(t, err)
-        self.d.append({{"n": t.id().split(".")[-1], "s": "fail"}})
-    def addError(self, t, err):
-        super().addError(t, err)
-        self.d.append({{"n": t.id().split(".")[-1], "s": "error"}})
-
-_t0 = _time.monotonic()
-_suite = unittest.TestLoader().loadTestsFromModule(sys.modules[__name__])
-_res = _R()
-_suite.run(_res)
-_elapsed = int((_time.monotonic() - _t0) * 1000)
-print("###EVAL###")
-print(json.dumps({{"total": _res.testsRun, "tests": _res.d, "ms": _elapsed}}))
-'''
-
-
-def _strip_main(code: str) -> str:
-    """Remove ``if __name__ == '__main__'`` block from test code."""
-    lines = code.split("\n")
-    out: list[str] = []
-    skip = False
-    for line in lines:
-        if line.strip().startswith("if __name__"):
-            skip = True
-            continue
-        if skip and (line.startswith((" ", "\t")) or line.strip() == ""):
-            continue
-        skip = False
-        out.append(line)
-    return "\n".join(out)
-
-
-def extract_code(response: str) -> str:
-    """Pull Python code out of a model response (strips markdown fences)."""
-    blocks = re.findall(r"```(?:python|py)?\s*\n(.*?)```", response, re.DOTALL)
-    if blocks:
-        return "\n\n".join(b.strip() for b in blocks)
-    return response.strip()
+K_VALUES = [1, 2, 4, 8]
 
 
 # ---------------------------------------------------------------------------
-# Rollout data
+# Inference
 # ---------------------------------------------------------------------------
 
-@dataclass
-class Rollout:
-    """One generated solution + its test execution results."""
-    puzzle_id: str
-    puzzle_num: str
-    rollout_idx: int
-    code: str = ""
-    passed: bool = False
-    visible_passed: int = 0
-    visible_total: int = 0
-    hidden_passed: int = 0
-    hidden_total: int = 0
-    error_type: str = "unknown"
-    execution_time_ms: int = 0
-    test_details: list[dict] = field(default_factory=list)
-
-    difficulty: str = ""
-    category: str = ""
-
-    @property
-    def total_tests(self) -> int:
-        return self.visible_total + self.hidden_total
-
-    @property
-    def total_passed(self) -> int:
-        return self.visible_passed + self.hidden_passed
-
-    @property
-    def test_pass_rate(self) -> float:
-        return self.total_passed / self.total_tests if self.total_tests else 0.0
-
-    def to_jsonl(self) -> dict:
-        return {
-            "puzzle_id": self.puzzle_id,
-            "puzzle_num": self.puzzle_num,
-            "rollout_idx": self.rollout_idx,
-            "pass": self.passed,
-            "visible_passed": self.visible_passed,
-            "visible_total": self.visible_total,
-            "hidden_passed": self.hidden_passed,
-            "hidden_total": self.hidden_total,
-            "error_type": self.error_type,
-            "execution_time_ms": self.execution_time_ms,
-            "difficulty": self.difficulty,
-            "category": self.category,
-            "code": self.code,
-        }
-
-
-# ---------------------------------------------------------------------------
-# Test execution
-# ---------------------------------------------------------------------------
-
-def execute_rollout(solution_code: str, test_code: str, timeout: int = 30) -> dict:
-    """Run solution against tests in subprocess. Returns parsed result dict."""
-    harness = _HARNESS.format(
-        solution_code=solution_code,
-        test_code=_strip_main(test_code),
-    )
-    tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False)
-    try:
-        tmp.write(harness)
-        tmp.flush()
-        tmp.close()
-        t0 = time.monotonic()
-        proc = subprocess.run(
-            [sys.executable, tmp.name],
-            capture_output=True, text=True, timeout=timeout,
-        )
-        wall_ms = int((time.monotonic() - t0) * 1000)
-
-        if "###EVAL###" in proc.stdout:
-            data = json.loads(proc.stdout.split("###EVAL###")[1].strip())
-            data["wall_ms"] = wall_ms
-            return data
-        stderr = proc.stderr.strip()
-        return {
-            "total": 0, "tests": [], "ms": wall_ms, "wall_ms": wall_ms,
-            "error": "syntax_error" if "SyntaxError" in stderr else "runtime_error",
-            "stderr": stderr[-500:],
-        }
-    except subprocess.TimeoutExpired:
-        return {"total": 0, "tests": [], "ms": timeout * 1000,
-                "wall_ms": timeout * 1000, "error": "timeout"}
-    except Exception as e:
-        return {"total": 0, "tests": [], "ms": 0, "wall_ms": 0,
-                "error": "runtime_error", "stderr": str(e)[:500]}
-    finally:
-        os.unlink(tmp.name)
-
-
-def classify_error(result: dict, vis_pass: int, vis_total: int,
-                   hid_pass: int, hid_total: int) -> str:
-    """Assign error_type per eval_plan.md spec."""
-    total_pass = vis_pass + hid_pass
-    total = vis_total + hid_total
-    if total > 0 and total_pass == total:
-        return "full_pass"
-    if result.get("error") == "syntax_error":
-        return "syntax_error"
-    if result.get("error") == "timeout":
-        return "timeout"
-    if result.get("error") == "runtime_error" and total == 0:
-        return "runtime_error"
-    if vis_total > 0 and vis_pass == vis_total and hid_pass < hid_total:
-        return "partial_pass"
-    if result.get("error") == "runtime_error":
-        return "runtime_error"
-    return "wrong_answer"
-
-
-def build_rollout(puzzle: dict, idx: int, code: str, timeout: int) -> Rollout:
-    """Generate + test one rollout, return populated Rollout."""
-    num = puzzle["_num"]
-    r = Rollout(
-        puzzle_id=puzzle["puzzle_id"], puzzle_num=num, rollout_idx=idx,
-        code=code,
-        difficulty=puzzle["difficulty"],
-        category=puzzle.get("category", ""),
-    )
-
-    result = execute_rollout(code, puzzle["unit_tests"], timeout=timeout)
-    r.execution_time_ms = result.get("wall_ms", 0)
-    r.test_details = result.get("tests", [])
-
-    for t in r.test_details:
-        is_hidden = t["n"].startswith("test_hidden")
-        if is_hidden:
-            r.hidden_total += 1
-            if t["s"] == "pass":
-                r.hidden_passed += 1
-        else:
-            r.visible_total += 1
-            if t["s"] == "pass":
-                r.visible_passed += 1
-
-    r.error_type = classify_error(
-        result, r.visible_passed, r.visible_total,
-        r.hidden_passed, r.hidden_total,
-    )
-    r.passed = r.error_type == "full_pass"
-    return r
-
-
-# ---------------------------------------------------------------------------
-# Model loading & inference (HuggingFace transformers)
-# ---------------------------------------------------------------------------
-
-def load_model(model_name: str, device: str = "auto"):
-    """Load model and tokenizer. Returns (model, tokenizer)."""
-    import torch
-    from transformers import AutoModelForCausalLM, AutoTokenizer
-
-    print(f"Loading model: {model_name}")
-    tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
-    model = AutoModelForCausalLM.from_pretrained(
-        model_name,
-        torch_dtype=torch.float16,
-        device_map=device,
-        trust_remote_code=True,
-    )
-    model.eval()
-    print(f"Model loaded on {model.device}\n")
-    return model, tokenizer
-
-
-def generate_solutions(model, tokenizer, prompt: str, starter_code: str,
-                       num_samples: int = 8, temperature: float = 0.8,
-                       max_new_tokens: int = 2048) -> list[str]:
-    """Generate num_samples solutions in a single batched call."""
-    import torch
-
-    user_msg = f"{prompt}\n\nComplete this function:\n\n{starter_code}"
-    messages = [
-        {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": user_msg},
-    ]
-    text = tokenizer.apply_chat_template(
-        messages, tokenize=False, add_generation_prompt=True,
-    )
-    inputs = tokenizer(text, return_tensors="pt").to(model.device)
-
-    with torch.no_grad():
-        outputs = model.generate(
-            **inputs,
-            max_new_tokens=max_new_tokens,
-            temperature=temperature,
-            top_p=0.95,
-            do_sample=True,
-            num_return_sequences=num_samples,
-            pad_token_id=tokenizer.eos_token_id,
-        )
-
-    input_len = inputs["input_ids"].shape[1]
-    results: list[str] = []
-    for seq in outputs:
-        decoded = tokenizer.decode(seq[input_len:], skip_special_tokens=True)
-        results.append(decoded)
-    return results
-
-
-# ---------------------------------------------------------------------------
-# Puzzle loading
-# ---------------------------------------------------------------------------
-
-def load_puzzles(puzzle_dir: str) -> list[dict]:
-    puzzles = []
-    for path in sorted(Path(puzzle_dir).glob("*.json")):
-        m = re.match(r"^(\d{3})_", path.name)
-        if not m:
-            continue
-        with open(path) as f:
-            data = json.load(f)
-        data["_num"] = m.group(1)
-        puzzles.append(data)
-    return puzzles
-
-
-# ---------------------------------------------------------------------------
-# Run 1 — main eval loop
-# ---------------------------------------------------------------------------
-
-def run_eval(
+def eval_model(
+    model_tag: str,
+    model_id: str,
     puzzles: list[dict],
-    model,
-    tokenizer,
-    num_samples: int = 8,
-    timeout: int = 30,
-    temperature: float = 0.8,
+    num_samples: int,
+    timeout: int,
+    temperature: float,
+    device: str,
 ) -> list[Rollout]:
+    """Load a model, run inference on all puzzles, return rollouts, then free GPU."""
+    import torch
+
+    print(f"\n{'='*70}")
+    print(f"  MODEL: {model_tag} ({model_id})")
+    print(f"  Puzzles: {len(puzzles)}  Samples: {num_samples}  Temp: {temperature}")
+    print(f"{'='*70}\n")
+
+    model, tokenizer = load_model(model_id, device=device)
     all_rollouts: list[Rollout] = []
-    total = len(puzzles)
 
     for i, puzzle in enumerate(puzzles):
         pid = puzzle["puzzle_id"]
-        diff = puzzle["difficulty"]
         cat = puzzle.get("category", "")
-        label = f"{diff}, {cat}" if cat else diff
-        print(f"[{i+1}/{total}] {pid} ({label})", flush=True)
+        label = f"[{cat}] " if cat else ""
+        print(f"  [{i+1}/{len(puzzles)}] {label}{pid}", flush=True)
 
         try:
             raw_responses = generate_solutions(
@@ -358,393 +96,345 @@ def run_eval(
                 num_samples=num_samples, temperature=temperature,
             )
         except Exception as e:
-            print(f"  Generation error: {e}", flush=True)
+            print(f"    Generation error: {e}", flush=True)
             raw_responses = [f"# GENERATION ERROR: {e}"] * num_samples
 
-        puzzle_rollouts: list[Rollout] = []
+        passes = 0
         for j, raw in enumerate(raw_responses):
             code = extract_code(raw)
             rollout = build_rollout(puzzle, j, code, timeout)
-            puzzle_rollouts.append(rollout)
+            rollout.puzzle_id = pid
+            all_rollouts.append(rollout)
+            if rollout.passed:
+                passes += 1
             tag = "PASS" if rollout.passed else rollout.error_type
-            print(f"  [{j+1}/{num_samples}] {tag:14s}  "
-                  f"vis={rollout.visible_passed}/{rollout.visible_total} "
-                  f"hid={rollout.hidden_passed}/{rollout.hidden_total} "
-                  f"({rollout.execution_time_ms}ms)", flush=True)
+            print(f"    [{j+1}/{num_samples}] {tag}", flush=True)
 
-        passes = sum(1 for r in puzzle_rollouts if r.passed)
-        print(f"  → {passes}/{num_samples} pass\n", flush=True)
-        all_rollouts.extend(puzzle_rollouts)
+        print(f"    -> {passes}/{num_samples} pass\n", flush=True)
+
+    del model, tokenizer
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    print(f"  {model_tag} complete. Freed GPU memory.\n")
 
     return all_rollouts
 
 
 # ---------------------------------------------------------------------------
-# Aggregation views (all computed offline from rollout data)
+# Pass@k scaling
 # ---------------------------------------------------------------------------
 
-def pass_at_k(n: int, c: int, k: int) -> float:
-    """Unbiased pass@k estimator (Codex paper)."""
-    if n < k:
-        return 1.0 if c > 0 else 0.0
-    if n - c < k:
-        return 1.0
-    return 1.0 - math.comb(n - c, k) / math.comb(n, k)
-
-
-def compute_views(rollouts: list[Rollout], k: int) -> dict[str, Any]:
-    """Compute every aggregation view from eval_plan.md."""
-    # Group rollouts by puzzle
+def compute_pass_at_k(
+    rollouts: list[Rollout],
+) -> dict[int, float]:
+    """Compute average pass@k across puzzles for one model."""
     by_puzzle: dict[str, list[Rollout]] = defaultdict(list)
     for r in rollouts:
-        by_puzzle[r.puzzle_num].append(r)
+        by_puzzle[r.puzzle_id].append(r)
 
-    # ── Per-puzzle summary ──
-    puzzle_summaries: list[dict] = []
-    for num in sorted(by_puzzle):
-        rs = by_puzzle[num]
-        n = len(rs)
-        c = sum(1 for r in rs if r.passed)
-        scores = [r.test_pass_rate for r in rs]
-        mean_score = sum(scores) / n if n else 0
-        score_var = sum((s - mean_score) ** 2 for s in scores) / n if n else 0
-        p_rate = c / n if n else 0
-        adv_var = p_rate * (1 - p_rate)
+    results: dict[int, float] = {}
+    for k in K_VALUES:
+        scores: list[float] = []
+        for pid, rs in by_puzzle.items():
+            n = len(rs)
+            c = sum(1 for r in rs if r.passed)
+            scores.append(pass_at_k(n, c, k))
+        results[k] = sum(scores) / len(scores) if scores else 0.0
+    return results
 
-        error_counts: dict[str, int] = defaultdict(int)
-        for r in rs:
-            error_counts[r.error_type] += 1
-        dominant_error = max(error_counts, key=error_counts.get) if error_counts else "?"
 
-        vis_rate = sum(r.visible_passed / r.visible_total if r.visible_total else 0
-                       for r in rs) / n if n else 0
-        hid_rate = sum(r.hidden_passed / r.hidden_total if r.hidden_total else 0
-                       for r in rs) / n if n else 0
+def print_scaling_table(all_results: dict[str, dict[int, float]]):
+    """Print pass@k scaling comparison table."""
+    model_order = sorted(all_results.keys(),
+                         key=lambda t: float(t.replace("B", "")))
 
-        first = rs[0]
-        puzzle_summaries.append({
-            "puzzle_num": num,
-            "puzzle_id": first.puzzle_id,
-            "difficulty": first.difficulty,
-            "category": first.category,
-            "pass_at_1": p_rate,
-            f"pass_at_{k}": pass_at_k(n, c, k),
-            "mean_test_pass_rate": round(mean_score, 4),
-            "visible_pass_rate": round(vis_rate, 4),
-            "hidden_pass_rate": round(hid_rate, 4),
-            "hidden_gap": round(vis_rate - hid_rate, 4),
-            "score_variance": round(score_var, 4),
-            "advantage_variance": round(adv_var, 4),
-            "best_score": round(max(scores, default=0), 4),
-            "error_distribution": dict(error_counts),
-            "dominant_error": dominant_error,
-            "zone": ("saturated" if p_rate == 1 else "learning" if c > 0 else "dead"),
+    header = f"{'Model':<28}" + "".join(f"{'pass@'+str(k):>10}" for k in K_VALUES)
+    print(f"\n{'='*68}")
+    print(f"  PASS@K SCALING RESULTS")
+    print(f"{'='*68}")
+    print(f"  {header}")
+    print(f"  {'-'*64}")
+    for tag in model_order:
+        scores = all_results[tag]
+        row = f"  Qwen2.5-Coder-{tag:<12}"
+        row += "".join(f"{scores[k]*100:9.1f}%" for k in K_VALUES)
+        print(row)
+    print(f"{'='*68}\n")
+
+    if len(model_order) > 1:
+        small_tag, best_tag = model_order[0], model_order[-1]
+        gap = all_results[best_tag][1] * 100 - all_results[small_tag][1] * 100
+        print(f"  Scaling gap ({small_tag} -> {best_tag}) at pass@1: {gap:+.1f}pp")
+        target_tag = model_order[1] if len(model_order) > 1 else model_order[0]
+        target_p1 = all_results[target_tag][1] * 100
+        best_p8 = all_results[best_tag][8] * 100
+        if target_p1 < best_p8:
+            print(f"  {target_tag} pass@1 ({target_p1:.1f}%) < {best_tag} "
+                  f"pass@8 ({best_p8:.1f}%) -> RL can close this gap")
+        print()
+
+
+def plot_scaling_curves(
+    all_results: dict[str, dict[int, float]],
+    output_dir: str,
+    n_puzzles: int = 0,
+    num_samples: int = 8,
+):
+    """Generate the pass@k line graph."""
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+    except ImportError:
+        print("  (matplotlib not installed — skipping plot)")
+        return
+
+    fig, ax = plt.subplots(figsize=(8, 5))
+    colors = {"0.5B": "#e74c3c", "1.5B": "#3498db", "3B": "#2ecc71"}
+    markers = {"0.5B": "o", "1.5B": "s", "3B": "D"}
+    model_order = sorted(all_results.keys(),
+                         key=lambda t: float(t.replace("B", "")))
+
+    for model_tag in model_order:
+        scores = all_results[model_tag]
+        ks = sorted(scores.keys())
+        vals = [scores[k] * 100 for k in ks]
+        ax.plot(
+            ks, vals,
+            marker=markers.get(model_tag, "o"),
+            color=colors.get(model_tag, None),
+            linewidth=2.2, markersize=8,
+            label=f"Qwen2.5-Coder-{model_tag}",
+        )
+        for k, v in zip(ks, vals):
+            ax.annotate(f"{v:.1f}%", (k, v), textcoords="offset points",
+                        xytext=(0, 10), ha="center", fontsize=8.5)
+
+    ax.set_xlabel("k (number of attempts)", fontsize=12)
+    ax.set_ylabel("pass@k (%)", fontsize=12)
+    title = (f"Pass@k Scaling ({n_puzzles} puzzles, {num_samples} rollouts)"
+             if n_puzzles else "Pass@k Scaling")
+    ax.set_title(title, fontsize=13)
+    ax.set_xticks(K_VALUES)
+    ax.set_ylim(0, 105)
+    ax.legend(fontsize=11, loc="lower right")
+    ax.grid(True, alpha=0.3)
+    ax.axhline(y=100, color="gray", linestyle="--", alpha=0.4, linewidth=1)
+
+    fig.tight_layout()
+    path = os.path.join(output_dir, "pass_at_k_scaling.png")
+    fig.savefig(path, dpi=150)
+    print(f"  Scaling plot -> {path}")
+    plt.close(fig)
+
+
+# ---------------------------------------------------------------------------
+# Cross-model zone migration
+# ---------------------------------------------------------------------------
+
+def compute_zone_migration(
+    per_model_views: dict[str, dict],
+) -> dict:
+    """Show how each puzzle's zone changes as model size grows.
+
+    Returns a dict with per-puzzle migration paths and summary counts.
+    Useful for curriculum design: puzzles that are 'dead' at 0.5B but
+    'learning' at 1.5B suggest the right difficulty tier for RL.
+    """
+    model_order = sorted(per_model_views.keys(),
+                         key=lambda t: float(t.replace("B", "")))
+    if len(model_order) < 2:
+        return {}
+
+    puzzle_zones: dict[str, dict[str, str]] = defaultdict(dict)
+    puzzle_p1: dict[str, dict[str, float]] = defaultdict(dict)
+    for tag in model_order:
+        for ps in per_model_views[tag]["puzzle_summaries"]:
+            pid = ps["puzzle_id"]
+            puzzle_zones[pid][tag] = ps["zone"]
+            puzzle_p1[pid][tag] = ps["pass_at_1"]
+
+    migrations: list[dict] = []
+    for pid in sorted(puzzle_zones):
+        path = [puzzle_zones[pid].get(t, "?") for t in model_order]
+        p1s = {t: round(puzzle_p1[pid].get(t, 0), 3) for t in model_order}
+        migrations.append({
+            "puzzle_id": pid,
+            "zone_path": dict(zip(model_order, path)),
+            "pass_at_1": p1s,
+            "trajectory": " -> ".join(path),
         })
 
-    # ── Difficulty breakdown ──
-    difficulty_view: dict[str, dict] = {}
-    all_difficulties = sorted(set(p["difficulty"] for p in puzzle_summaries))
-    for diff in all_difficulties:
-        pss = [p for p in puzzle_summaries if p["difficulty"] == diff]
-        if not pss:
-            continue
-        n_d = len(pss)
-        difficulty_view[diff] = {
-            "count": n_d,
-            "pass_at_1": sum(p["pass_at_1"] for p in pss) / n_d,
-            f"pass_at_{k}": sum(p[f"pass_at_{k}"] for p in pss) / n_d,
-            "mean_test_pass_rate": sum(p["mean_test_pass_rate"] for p in pss) / n_d,
-            "visible_pass_rate": sum(p["visible_pass_rate"] for p in pss) / n_d,
-            "hidden_pass_rate": sum(p["hidden_pass_rate"] for p in pss) / n_d,
-            "hidden_gap": sum(p["hidden_gap"] for p in pss) / n_d,
-            "learning_zone": sum(1 for p in pss if p["zone"] == "learning"),
-        }
-
-    # ── Category breakdown ──
-    category_view: dict[str, dict] = {}
-    all_categories = sorted(set(p["category"] for p in puzzle_summaries if p["category"]))
-    for cat in all_categories:
-        pss = [p for p in puzzle_summaries if p["category"] == cat]
-        if not pss:
-            continue
-        n_c = len(pss)
-        category_view[cat] = {
-            "count": n_c,
-            "pass_at_1": sum(p["pass_at_1"] for p in pss) / n_c,
-            f"pass_at_{k}": sum(p[f"pass_at_{k}"] for p in pss) / n_c,
-            "mean_test_pass_rate": sum(p["mean_test_pass_rate"] for p in pss) / n_c,
-            "advantage_variance": sum(p["advantage_variance"] for p in pss) / n_c,
-            "learning_zone": sum(1 for p in pss if p["zone"] == "learning"),
-        }
-
-    # ── Error type distribution ──
-    error_totals: dict[str, int] = defaultdict(int)
-    for r in rollouts:
-        error_totals[r.error_type] += 1
-    total_rollouts = len(rollouts)
-    error_view = {
-        etype: {"count": cnt, "rate": round(cnt / total_rollouts, 4) if total_rollouts else 0}
-        for etype, cnt in sorted(error_totals.items(), key=lambda x: -x[1])
-    }
-
-    # ── Advantage spread ──
-    zones = {"dead": 0, "learning": 0, "saturated": 0}
-    for ps in puzzle_summaries:
-        zones[ps["zone"]] += 1
-    advantage_ranked = sorted(puzzle_summaries, key=lambda p: -p["advantage_variance"])
-
-    # ── RL target ranking (eval_plan.md priority 1/2/3) ──
-    rl_targets: list[dict] = []
-    for ps in puzzle_summaries:
-        priority = 3
-        reason = "Dead zone — no signal, needs prerequisite skill training"
-        if ps["zone"] == "learning":
-            priority = 1
-            reason = "High advantage spread — model sometimes solves, GRPO will work"
-        elif ps["zone"] == "dead" and ps["dominant_error"] in ("wrong_answer", "partial_pass"):
-            priority = 2
-            reason = "Attempts right structure but fails — curriculum + RL"
-        elif ps["zone"] == "dead" and ps["best_score"] > 0.2:
-            priority = 2
-            reason = "Partial understanding — needs easier variants of this skill"
-        elif ps["zone"] == "saturated":
-            priority = 0
-            reason = "Already mastered — skip in RL training"
-        rl_targets.append({
-            "puzzle_id": ps["puzzle_id"],
-            "puzzle_num": ps["puzzle_num"],
-            "difficulty": ps["difficulty"],
-            "category": ps.get("category", ""),
-            "priority": priority,
-            "reason": reason,
-            "zone": ps["zone"],
-            "pass_at_1": round(ps["pass_at_1"], 4),
-            f"pass_at_{k}": round(ps[f"pass_at_{k}"], 4),
-            "advantage_variance": ps["advantage_variance"],
-            "best_score": ps["best_score"],
-            "dominant_error": ps["dominant_error"],
-        })
-    rl_targets.sort(key=lambda t: (t["priority"], -t["advantage_variance"]))
+    trajectory_counts: dict[str, int] = defaultdict(int)
+    for m in migrations:
+        trajectory_counts[m["trajectory"]] += 1
 
     return {
-        "puzzle_summaries": puzzle_summaries,
-        "difficulty": difficulty_view,
-        "category": category_view,
-        "error_distribution": error_view,
-        "advantage_spread": {"zones": zones, "ranked": advantage_ranked},
-        "rl_targets": rl_targets,
+        "model_order": model_order,
+        "puzzles": migrations,
+        "trajectory_counts": dict(sorted(trajectory_counts.items(),
+                                         key=lambda x: -x[1])),
     }
 
 
-# ---------------------------------------------------------------------------
-# Report formatting
-# ---------------------------------------------------------------------------
+def print_zone_migration(migration: dict):
+    """Print a human-readable zone migration summary."""
+    if not migration:
+        return
+    tags = migration["model_order"]
+    print(f"\n{'='*68}")
+    print(f"  ZONE MIGRATION ({' -> '.join(tags)})")
+    print(f"{'='*68}")
+    for traj, count in migration["trajectory_counts"].items():
+        print(f"  {traj:<40s} {count:>3} puzzles")
+    print()
 
-def format_report(views: dict, model: str, k: int) -> str:
-    lines: list[str] = []
-    W = 80
-
-    def section(title: str):
-        lines.append("")
-        lines.append("─" * W)
-        lines.append(f"  {title}")
-        lines.append("─" * W)
-
-    ps = views["puzzle_summaries"]
-    n_puzzles = len(ps)
-
-    lines.append("=" * W)
-    lines.append(f"{'RL CODING PUZZLE EVALUATION REPORT':^{W}}")
-    lines.append("=" * W)
-    lines.append(f"  Model:          {model}")
-    lines.append(f"  Samples/puzzle: {k}    Puzzles: {n_puzzles}")
-    lines.append(f"  Timestamp:      {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    lines.append("=" * W)
-
-    # ── pass@1 / pass@k overall ──
-    section("PASS RATES (Overall)")
-    avg_p1 = sum(p["pass_at_1"] for p in ps) / n_puzzles if n_puzzles else 0
-    pk_key = f"pass_at_{k}"
-    solved = sum(1 for p in ps if p[pk_key] > 0)
-    avg_test = sum(p["mean_test_pass_rate"] for p in ps) / n_puzzles if n_puzzles else 0
-    avg_vis = sum(p["visible_pass_rate"] for p in ps) / n_puzzles if n_puzzles else 0
-    avg_hid = sum(p["hidden_pass_rate"] for p in ps) / n_puzzles if n_puzzles else 0
-    lines.append(f"  pass@1 (avg):             {avg_p1*100:5.1f}%")
-    lines.append(f"  Solved (pass@{k} > 0):     {solved}/{n_puzzles}")
-    lines.append(f"  Mean test pass rate:      {avg_test*100:5.1f}%")
-    lines.append(f"  Visible test rate:        {avg_vis*100:5.1f}%")
-    lines.append(f"  Hidden test rate:         {avg_hid*100:5.1f}%")
-    lines.append(f"  Hidden gap (vis - hid):   {(avg_vis-avg_hid)*100:+5.1f}%")
-
-    # ── Difficulty breakdown ──
-    section("DIFFICULTY BREAKDOWN")
-    dv = views["difficulty"]
-    lines.append(f"  {'Diff':<12} {'#':>3} {'P@1':>6} {'P@k':>6} {'Test%':>6} "
-                 f"{'Vis%':>6} {'Hid%':>6} {'Gap':>6} {'LrnZone':>8}")
-    lines.append("  " + "─" * (W - 4))
-    for diff in dv:
-        dd = dv[diff]
-        lines.append(
-            f"  {diff:<12} {dd['count']:>3} {dd['pass_at_1']*100:5.1f}% "
-            f"{dd[pk_key]*100:5.1f}% {dd['mean_test_pass_rate']*100:5.1f}% "
-            f"{dd['visible_pass_rate']*100:5.1f}% {dd['hidden_pass_rate']*100:5.1f}% "
-            f"{dd['hidden_gap']*100:+5.1f}% "
-            f"{dd['learning_zone']:>3}/{dd['count']}"
-        )
-
-    # ── Category breakdown ──
-    cv = views.get("category", {})
-    if cv:
-        section("CATEGORY BREAKDOWN")
-        lines.append(f"  {'Category':<20} {'#':>3} {'P@1':>6} {'P@k':>6} "
-                     f"{'Test%':>6} {'GRPO':>6} {'LrnZone':>8}")
-        lines.append("  " + "─" * (W - 4))
-        for cat in cv:
-            cc = cv[cat]
-            lines.append(
-                f"  {cat:<20} {cc['count']:>3} {cc['pass_at_1']*100:5.1f}% "
-                f"{cc[pk_key]*100:5.1f}% {cc['mean_test_pass_rate']*100:5.1f}% "
-                f"{cc['advantage_variance']:.3f} "
-                f"{cc['learning_zone']:>3}/{cc['count']}"
-            )
-
-    # ── Error distribution ──
-    section("ERROR TYPE DISTRIBUTION")
-    ev = views["error_distribution"]
-    lines.append(f"  {'Type':<16} {'Count':>6} {'Rate':>7}")
-    lines.append("  " + "─" * 32)
-    for etype, info in ev.items():
-        label = etype.replace("_", " ").title()
-        lines.append(f"  {label:<16} {info['count']:>6} {info['rate']*100:6.1f}%")
-
-    # ── Advantage spread ──
-    section("ADVANTAGE SPREAD (RL Signal)")
-    zd = views["advantage_spread"]["zones"]
-    total_z = sum(zd.values())
-    lines.append(f"  Learning zone:  {zd['learning']:>3}/{total_z}  "
-                 f"({zd['learning']/total_z*100:.0f}%)  ← Best for GRPO")
-    lines.append(f"  Dead:           {zd['dead']:>3}/{total_z}  "
-                 f"({zd['dead']/total_z*100:.0f}%)  ← No positive signal")
-    lines.append(f"  Saturated:      {zd['saturated']:>3}/{total_z}  "
-                 f"({zd['saturated']/total_z*100:.0f}%)  ← Already mastered")
-    lines.append("")
-    lines.append("  Top puzzles by GRPO reward variance (p@1 * (1 - p@1)):")
-    for j, p in enumerate(views["advantage_spread"]["ranked"][:10]):
-        bar = "█" * int(p["advantage_variance"] * 40)
-        cat_str = f"[{p['category']}] " if p.get("category") else ""
-        lines.append(f"    {j+1:>2}. {p['puzzle_id']:<32} {cat_str}{p['difficulty']:<6} "
-                     f"p@1={p['pass_at_1']*100:4.0f}%  grpo={p['advantage_variance']:.3f} {bar}")
-
-    # ── RL targets ──
-    section("RL TRAINING TARGETS (Ranked)")
-    lines.append("")
-    for pri, label in [(1, "Priority 1 — High advantage (GRPO sweet spot)"),
-                       (2, "Priority 2 — Curriculum candidates"),
-                       (3, "Priority 3 — Dead zones (need scaffolding)")]:
-        targets = [t for t in views["rl_targets"] if t["priority"] == pri]
-        if not targets:
-            continue
-        lines.append(f"  {label}:")
-        for t in targets[:10]:
-            cat_str = f"[{t.get('category', '')}] " if t.get("category") else ""
-            lines.append(f"    {t['puzzle_id']:<36} {cat_str}{t['difficulty']:<10} "
-                         f"p@1={t['pass_at_1']*100:4.0f}%")
-            lines.append(f"      → {t['reason']}")
-        lines.append("")
-
-
-    lines.append("=" * W)
-    return "\n".join(lines)
+    interesting = [p for p in migration["puzzles"]
+                   if len(set(p["zone_path"].values())) > 1]
+    if interesting:
+        print(f"  Puzzles that change zone ({len(interesting)}):")
+        for p in interesting[:15]:
+            p1_vals = " | ".join(f"{v*100:4.0f}%" for v in p["pass_at_1"].values())
+            print(f"    {p['puzzle_id']:<36s} {p['trajectory']:<30s} p@1: {p1_vals}")
+        if len(interesting) > 15:
+            print(f"    ... and {len(interesting) - 15} more")
+    print()
 
 
 # ---------------------------------------------------------------------------
-# Save artifacts (per eval_plan.md output spec)
+# Puzzle loading (multi-dir)
 # ---------------------------------------------------------------------------
 
-def save_artifacts(rollouts: list[Rollout], views: dict, output_dir: str,
-                   model: str = "", report: str = ""):
-    os.makedirs(output_dir, exist_ok=True)
+def load_puzzles_multi(dirs: list[str]) -> list[dict]:
+    """Load puzzles from one or more directories, deduplicating by puzzle_id."""
+    all_puzzles: list[dict] = []
+    seen_ids: set[str] = set()
+    for d in dirs:
+        for p in load_puzzles(d):
+            pid = p["puzzle_id"]
+            if pid not in seen_ids:
+                seen_ids.add(pid)
+                all_puzzles.append(p)
+    all_puzzles.sort(key=lambda p: (p.get("difficulty", ""), p["puzzle_id"]))
+    return all_puzzles
 
-    # raw_rollouts.jsonl — one line per (puzzle, rollout)
-    path = os.path.join(output_dir, "raw_rollouts.jsonl")
-    with open(path, "w") as f:
-        for r in rollouts:
-            f.write(json.dumps(r.to_jsonl()) + "\n")
-    print(f"  raw_rollouts.jsonl          → {path}")
 
-    # summary.json — per-puzzle aggregated metrics
-    path = os.path.join(output_dir, "summary.json")
-    with open(path, "w") as f:
-        json.dump(views["puzzle_summaries"], f, indent=2)
-    print(f"  summary.json                → {path}")
+# ---------------------------------------------------------------------------
+# Combined analytics
+# ---------------------------------------------------------------------------
 
-    # rl_targets_ranked.json
-    path = os.path.join(output_dir, "rl_targets_ranked.json")
-    with open(path, "w") as f:
-        json.dump(views["rl_targets"], f, indent=2)
-    print(f"  rl_targets_ranked.json      → {path}")
-
-    # eval_analytics.json — full structured analytics
-    ps = views["puzzle_summaries"]
-    n = len(ps)
-    k_key = [k for k in ps[0] if k.startswith("pass_at_") and k != "pass_at_1"][0] if ps else "pass_at_8"
-    zones = views.get("advantage_spread", {}).get("zones", {})
-
-    analytics = {
+def build_combined_analytics(
+    per_model_views: dict[str, dict],
+    scaling_results: dict[str, dict[int, float]],
+    zone_migration: dict,
+    n_puzzles: int,
+    num_samples: int,
+) -> dict:
+    """Build comprehensive cross-model analytics JSON."""
+    analytics: dict = {
         "meta": {
-            "model": model,
-            "n_puzzles": n,
+            "models": sorted(per_model_views.keys(),
+                             key=lambda t: float(t.replace("B", ""))),
+            "n_puzzles": n_puzzles,
+            "num_samples": num_samples,
+            "k_values": K_VALUES,
             "timestamp": datetime.now().isoformat(),
         },
-        "overall": {
-            "pass_at_1": round(sum(p["pass_at_1"] for p in ps) / n, 4) if n else 0,
-            "mean_test_pass_rate": round(sum(p["mean_test_pass_rate"] for p in ps) / n, 4) if n else 0,
-            "mean_grpo_variance": round(sum(p["advantage_variance"] for p in ps) / n, 4) if n else 0,
-            "zones": dict(zones),
+        "scaling": {
+            tag: {str(k): round(v, 4) for k, v in scores.items()}
+            for tag, scores in scaling_results.items()
         },
-        "categories": views.get("category", {}),
-        "difficulty": views.get("difficulty", {}),
-        "per_puzzle": views["puzzle_summaries"],
-        "rl_targets": views["rl_targets"],
+        "per_model": {},
     }
-    path = os.path.join(output_dir, "eval_analytics.json")
+
+    for model_tag, views in per_model_views.items():
+        ps = views["puzzle_summaries"]
+        n = len(ps)
+        zones = views.get("advantage_spread", {}).get("zones", {})
+
+        analytics["per_model"][model_tag] = {
+            "overall": {
+                "pass_at_1": round(sum(p["pass_at_1"] for p in ps) / n, 4) if n else 0,
+                "mean_test_pass_rate": round(
+                    sum(p["mean_test_pass_rate"] for p in ps) / n, 4) if n else 0,
+                "mean_grpo_variance": round(
+                    sum(p["advantage_variance"] for p in ps) / n, 4) if n else 0,
+                "zones": dict(zones),
+            },
+            "categories": views.get("category", {}),
+            "difficulty": views.get("difficulty", {}),
+            "rl_targets": [t for t in views["rl_targets"] if t["priority"] <= 2],
+            "per_puzzle": views["puzzle_summaries"],
+        }
+
+    if zone_migration:
+        analytics["zone_migration"] = zone_migration
+
+    return analytics
+
+
+# ---------------------------------------------------------------------------
+# Save all outputs
+# ---------------------------------------------------------------------------
+
+def save_all(
+    per_model_rollouts: dict[str, list[Rollout]],
+    per_model_views: dict[str, dict],
+    scaling_results: dict[str, dict[int, float]],
+    zone_migration: dict,
+    n_puzzles: int,
+    num_samples: int,
+    output_dir: str,
+):
+    """Save per-model artifacts, scaling data, and combined analytics."""
+    os.makedirs(output_dir, exist_ok=True)
+
+    # Per-model artifacts
+    for model_tag in per_model_rollouts:
+        model_id = MODEL_REGISTRY.get(model_tag, model_tag)
+        model_dir = os.path.join(output_dir, model_tag.replace(".", "_"))
+        views = per_model_views[model_tag]
+        report = format_report(views, model_id, num_samples)
+        print(f"\n  Saving {model_tag} artifacts -> {model_dir}/")
+        save_artifacts(
+            per_model_rollouts[model_tag], views, model_dir,
+            model=model_id, report=report,
+        )
+
+    # Scaling summary
+    scaling_data = {
+        "meta": {
+            "models": sorted(scaling_results.keys(),
+                             key=lambda t: float(t.replace("B", ""))),
+            "k_values": K_VALUES,
+            "n_puzzles": n_puzzles,
+            "num_samples": num_samples,
+            "timestamp": datetime.now().isoformat(),
+        },
+        "pass_at_k": {
+            tag: {str(k): round(v, 4) for k, v in scores.items()}
+            for tag, scores in scaling_results.items()
+        },
+    }
+    path = os.path.join(output_dir, "scaling_summary.json")
     with open(path, "w") as f:
-        json.dump(analytics, f, indent=2)
-    print(f"  eval_analytics.json         → {path}")
+        json.dump(scaling_data, f, indent=2)
+    print(f"\n  scaling_summary.json -> {path}")
 
-    if report:
-        path = os.path.join(output_dir, "report.txt")
-        with open(path, "w") as f:
-            f.write(report)
-        print(f"  report.txt                  -> {path}")
+    # Plot
+    plot_scaling_curves(scaling_results, output_dir,
+                        n_puzzles=n_puzzles, num_samples=num_samples)
 
-
-# ---------------------------------------------------------------------------
-# Load existing rollouts for re-analysis
-# ---------------------------------------------------------------------------
-
-def load_rollouts(path: str) -> list[Rollout]:
-    rollouts: list[Rollout] = []
-    with open(path) as f:
-        for line in f:
-            d = json.loads(line)
-            r = Rollout(
-                puzzle_id=d["puzzle_id"],
-                puzzle_num=d["puzzle_num"],
-                rollout_idx=d["rollout_idx"],
-                code=d.get("code", ""),
-                passed=d["pass"],
-                visible_passed=d["visible_passed"],
-                visible_total=d["visible_total"],
-                hidden_passed=d["hidden_passed"],
-                hidden_total=d["hidden_total"],
-                error_type=d["error_type"],
-                execution_time_ms=d.get("execution_time_ms", 0),
-                difficulty=d["difficulty"],
-                category=d.get("category", ""),
-            )
-            rollouts.append(r)
-    return rollouts
+    # Combined analytics
+    combined = build_combined_analytics(
+        per_model_views, scaling_results, zone_migration,
+        n_puzzles, num_samples,
+    )
+    path = os.path.join(output_dir, "combined_analytics.json")
+    with open(path, "w") as f:
+        json.dump(combined, f, indent=2)
+    print(f"  combined_analytics.json -> {path}")
 
 
 # ---------------------------------------------------------------------------
@@ -752,58 +442,151 @@ def load_rollouts(path: str) -> list[Rollout]:
 # ---------------------------------------------------------------------------
 
 def main():
-    parser = argparse.ArgumentParser(description="RL Coding Puzzle Evaluation")
-    parser.add_argument("--model", default="Qwen/Qwen2.5-Coder-1.5B-Instruct",
-                        help="HuggingFace model ID (default: Qwen/Qwen2.5-Coder-1.5B-Instruct)")
-    parser.add_argument("--device", default="auto",
-                        help="Device map for model loading (default: auto)")
-    parser.add_argument("--puzzle-dir", default=None,
-                        help="Puzzle directory (default: ../puzzles)")
+    parser = argparse.ArgumentParser(
+        description="RL Coding Puzzle Evaluation — multi-model scaling "
+                    "with category analysis, GRPO variance, and RL targets"
+    )
+    parser.add_argument(
+        "--puzzle-dir", nargs="+", default=None,
+        help="One or more puzzle directories "
+             "(default: ../puzzles_easy ../puzzles_humaneval)")
+    parser.add_argument(
+        "--output-dir", default=None,
+        help="Output directory (default: ../eval_results)")
+    parser.add_argument(
+        "--models", nargs="+", default=list(MODEL_REGISTRY.keys()),
+        choices=list(MODEL_REGISTRY.keys()),
+        help="Model sizes to evaluate (default: 0.5B 1.5B 3B)")
     parser.add_argument("--samples", type=int, default=8,
                         help="Rollouts per puzzle (default: 8)")
-    parser.add_argument("--timeout", type=int, default=30,
-                        help="Test execution timeout in seconds (default: 30)")
-    parser.add_argument("--temperature", type=float, default=0.8)
-    parser.add_argument("--output-dir", default=None,
-                        help="Output directory (default: ../eval_results)")
-    parser.add_argument("--analyze", metavar="ROLLOUTS_JSONL",
-                        help="Skip inference; re-analyze existing raw_rollouts.jsonl")
+    parser.add_argument("--timeout", type=int, default=30)
+    parser.add_argument("--temperature", type=float, default=1.0,
+                        help="Sampling temperature (default: 1.0)")
+    parser.add_argument("--device", default="auto")
+    parser.add_argument(
+        "--plot-only", action="store_true",
+        help="Re-plot from saved scaling_summary.json (skip inference)")
+    parser.add_argument(
+        "--analyze-dir", metavar="DIR",
+        help="Re-analyze from saved rollout files in DIR (skip inference)")
     args = parser.parse_args()
 
     script_dir = Path(__file__).parent
-    puzzle_dir = args.puzzle_dir or str(script_dir.parent / "puzzles")
+    puzzle_dirs = args.puzzle_dir or [
+        str(script_dir.parent / "puzzles_easy"),
+        str(script_dir.parent / "puzzles_humaneval"),
+    ]
     output_dir = args.output_dir or str(script_dir.parent / "eval_results")
-    k = args.samples
 
-    if args.analyze:
-        print(f"Loading rollouts from {args.analyze}...")
-        rollouts = load_rollouts(args.analyze)
-        n_puzzles = len(set(r.puzzle_num for r in rollouts))
-        k = len(rollouts) // n_puzzles if n_puzzles else k
-        print(f"  {len(rollouts)} rollouts across {n_puzzles} puzzles ({k}/puzzle)\n")
-    else:
-        puzzles = load_puzzles(puzzle_dir)
-        if not puzzles:
-            print(f"No puzzles found in {puzzle_dir}")
-            sys.exit(1)
-        print(f"Loaded {len(puzzles)} puzzles from {puzzle_dir}")
-        print(f"Model: {args.model}")
-        print(f"Samples: {k}  |  Temperature: {args.temperature}  |  Timeout: {args.timeout}s")
-        print()
-
-        model, tokenizer = load_model(args.model, device=args.device)
-        rollouts = run_eval(
-            puzzles, model, tokenizer,
-            num_samples=k, timeout=args.timeout,
-            temperature=args.temperature,
+    # --plot-only: just regenerate the chart from scaling_summary.json
+    if args.plot_only:
+        print("Loading saved scaling results...")
+        path = os.path.join(output_dir, "scaling_summary.json")
+        with open(path) as f:
+            data = json.load(f)
+        all_scaling = {
+            tag: {int(k): v for k, v in scores.items()}
+            for tag, scores in data["pass_at_k"].items()
+        }
+        print_scaling_table(all_scaling)
+        plot_scaling_curves(
+            all_scaling, output_dir,
+            n_puzzles=data["meta"].get("n_puzzles", 0),
+            num_samples=data["meta"].get("num_samples", 8),
         )
+        return
 
-    views = compute_views(rollouts, k)
-    report = format_report(views, args.model, k)
-    print(report)
+    # --analyze-dir: reload rollouts, recompute all analytics (no inference)
+    if args.analyze_dir:
+        print(f"Re-analyzing rollouts from {args.analyze_dir}/ ...")
+        per_model_rollouts: dict[str, list[Rollout]] = {}
+        per_model_views: dict[str, dict] = {}
+        all_scaling: dict[str, dict[int, float]] = {}
 
-    print(f"\nSaving artifacts to {output_dir}/")
-    save_artifacts(rollouts, views, output_dir, model=args.model, report=report)
+        for sub in sorted(Path(args.analyze_dir).iterdir()):
+            rollout_file = sub / "raw_rollouts.jsonl"
+            if not rollout_file.exists():
+                continue
+            tag = sub.name.replace("_", ".")
+            if tag.endswith("B"):
+                tag = tag  # e.g. "1_5B" -> "1.5B"
+            rollouts = load_rollouts(str(rollout_file))
+            n_per = len(set(r.puzzle_num for r in rollouts))
+            k = len(rollouts) // n_per if n_per else args.samples
+            print(f"  {tag}: {len(rollouts)} rollouts, {n_per} puzzles")
+
+            per_model_rollouts[tag] = rollouts
+            per_model_views[tag] = compute_views(rollouts, k)
+            all_scaling[tag] = compute_pass_at_k(rollouts)
+
+        n_puzzles = max(
+            (len(v["puzzle_summaries"]) for v in per_model_views.values()),
+            default=0,
+        )
+        zone_migration = compute_zone_migration(per_model_views)
+
+        for tag, views in per_model_views.items():
+            model_id = MODEL_REGISTRY.get(tag, tag)
+            print(format_report(views, model_id, args.samples))
+
+        print_scaling_table(all_scaling)
+        print_zone_migration(zone_migration)
+
+        save_all(
+            per_model_rollouts, per_model_views, all_scaling,
+            zone_migration, n_puzzles, args.samples, output_dir,
+        )
+        print("\nDone (re-analysis).")
+        return
+
+    # ── Normal run: inference + analytics ──
+    puzzles = load_puzzles_multi(puzzle_dirs)
+    if not puzzles:
+        print(f"No puzzles found in {puzzle_dirs}")
+        sys.exit(1)
+
+    print(f"Loaded {len(puzzles)} puzzles from {', '.join(puzzle_dirs)}")
+    print(f"Models: {', '.join(args.models)}")
+    print(f"Samples: {args.samples}  |  Temp: {args.temperature}  "
+          f"|  Timeout: {args.timeout}s")
+
+    per_model_rollouts: dict[str, list[Rollout]] = {}
+    per_model_views: dict[str, dict] = {}
+    all_scaling: dict[str, dict[int, float]] = {}
+
+    for model_tag in args.models:
+        model_id = MODEL_REGISTRY[model_tag]
+
+        rollouts = eval_model(
+            model_tag, model_id, puzzles,
+            num_samples=args.samples, timeout=args.timeout,
+            temperature=args.temperature, device=args.device,
+        )
+        per_model_rollouts[model_tag] = rollouts
+
+        views = compute_views(rollouts, args.samples)
+        per_model_views[model_tag] = views
+
+        report = format_report(views, model_id, args.samples)
+        print(report)
+
+        all_scaling[model_tag] = compute_pass_at_k(rollouts)
+
+    # Scaling comparison (only interesting with 2+ models)
+    if len(args.models) > 1:
+        print_scaling_table(all_scaling)
+
+    zone_migration = compute_zone_migration(per_model_views)
+    if zone_migration:
+        print_zone_migration(zone_migration)
+
+    # Save everything
+    print(f"\nSaving all artifacts to {output_dir}/")
+    save_all(
+        per_model_rollouts, per_model_views, all_scaling,
+        zone_migration, len(puzzles), args.samples, output_dir,
+    )
+
     print("\nDone.")
 
 
