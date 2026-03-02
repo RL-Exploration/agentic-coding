@@ -173,31 +173,30 @@ def scan_existing_puzzles(puzzle_dir: str) -> Dict[int, str]:
 
 
 def extract_json(text: str) -> Optional[dict]:
-    """Extract a JSON object from the model's response text, stripping any scratchpad."""
-    brace_depth = 0
-    start = None
-    last_json_start = None
-    last_json_end = None
+    """Extract a JSON object from the model's response text, stripping any scratchpad.
 
-    for i, ch in enumerate(text):
-        if ch == "{":
-            if brace_depth == 0:
-                start = i
-            brace_depth += 1
-        elif ch == "}":
-            brace_depth -= 1
-            if brace_depth == 0 and start is not None:
-                last_json_start = start
-                last_json_end = i + 1
-
-    if last_json_start is not None:
-        candidate = text[last_json_start:last_json_end]
-        try:
-            return json.loads(candidate)
-        except json.JSONDecodeError:
-            pass
-
-    return None
+    Uses json.JSONDecoder.raw_decode which handles all edge cases (braces inside
+    strings, escaped quotes, etc.) that a manual brace-depth counter cannot.
+    Tries each '{' position and returns the largest valid dict found.
+    """
+    decoder = json.JSONDecoder()
+    best: Optional[dict] = None
+    best_size = 0
+    i = 0
+    n = len(text)
+    while i < n:
+        if text[i] == "{":
+            try:
+                obj, end = decoder.raw_decode(text, i)
+                if isinstance(obj, dict) and len(obj) > best_size:
+                    best = obj
+                    best_size = len(obj)
+                i = end
+            except json.JSONDecodeError:
+                i += 1
+        else:
+            i += 1
+    return best
 
 
 def validate_puzzle(data: dict) -> bool:
