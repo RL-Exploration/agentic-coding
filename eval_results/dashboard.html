@@ -1,0 +1,459 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>RL Coding Eval Dashboard</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+<style>
+  :root {
+    --bg: #0f1117; --surface: #181b28; --surface2: #1e2235;
+    --border: #2a2f47; --text: #e2e4ed; --text2: #8b8fa3;
+    --blue: #60a5fa; --purple: #a78bfa; --green: #4ade80;
+    --yellow: #facc15; --orange: #fb923c; --red: #f87171;
+    --cyan: #22d3ee;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text); font-family: 'Inter', system-ui, sans-serif; font-size: 14px; padding: 24px; }
+  h1 { font-size: 1.5rem; font-weight: 700; margin-bottom: 4px; }
+  h2 { font-size: 1rem; font-weight: 600; margin-bottom: 12px; color: var(--text); }
+  .meta { color: var(--text2); font-size: 0.82rem; margin-bottom: 28px; display: flex; gap: 20px; flex-wrap: wrap; }
+  .meta strong { color: var(--text); }
+  .section { margin-bottom: 32px; }
+  .section-label { font-size: 0.7rem; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; color: var(--text2); margin-bottom: 10px; }
+  .grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+  .grid-4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+  .grid-2 { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; }
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 16px; }
+  .kpi-label { font-size: 0.72rem; color: var(--text2); text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 6px; }
+  .kpi-value { font-size: 2rem; font-weight: 700; line-height: 1; }
+  .kpi-sub { font-size: 0.78rem; color: var(--text2); margin-top: 4px; }
+  .chart-wrap { position: relative; }
+  table { width: 100%; border-collapse: collapse; font-size: 0.8rem; }
+  th { text-align: left; color: var(--text2); font-weight: 500; font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.05em; padding: 6px 8px; border-bottom: 1px solid var(--border); }
+  td { padding: 6px 8px; border-bottom: 1px solid var(--border); }
+  tr:last-child td { border-bottom: none; }
+  tr:hover td { background: var(--surface2); }
+  .num { text-align: right; font-variant-numeric: tabular-nums; }
+  .bar-bg { background: var(--surface2); border-radius: 3px; height: 6px; width: 80px; }
+  .bar-fill { height: 6px; border-radius: 3px; }
+  .tag { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 0.72rem; font-weight: 600; }
+  .tag-0 { background: #1a2a1a; color: var(--green); }
+  .tag-1 { background: #2a1f1a; color: var(--orange); }
+  .tag-2 { background: #2a1a1a; color: var(--red); }
+  .model-0 { color: var(--red); }
+  .model-1 { color: var(--blue); }
+  .model-2 { color: var(--green); }
+  .insight { background: var(--surface2); border-left: 3px solid var(--green); border-radius: 0 8px 8px 0; padding: 12px 16px; margin-bottom: 8px; font-size: 0.82rem; line-height: 1.5; color: var(--text2); }
+  .insight strong { color: var(--text); }
+  .pill { display: inline-block; padding: 1px 7px; border-radius: 12px; font-size: 0.7rem; font-weight: 600; margin-left: 4px; }
+  .pill-learn { background: #1a2e1a; color: var(--green); }
+  .pill-sat { background: #252040; color: var(--text2); }
+  .pill-dead { background: #2a1a1a; color: var(--red); }
+  @media (max-width: 900px) { .grid-4 { grid-template-columns: repeat(2,1fr); } .grid-3 { grid-template-columns: repeat(2,1fr); } }
+  @media (max-width: 600px) { .grid-4, .grid-3, .grid-2 { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+
+<h1>RL Coding Eval Dashboard</h1>
+<div class="meta">
+  <span>Models: <strong>0.5B · 1.5B · 3B</strong> (Qwen2.5-Coder-Instruct)</span>
+  <span>Dataset: <strong>50 Easy puzzles</strong></span>
+  <span>Samples/puzzle: <strong>8</strong></span>
+  <span>2026-03-02 22:37</span>
+</div>
+
+<!-- KPI row -->
+<div class="section grid-4">
+  <div class="card">
+    <div class="kpi-label">0.5B pass@1</div>
+    <div class="kpi-value model-0">36.8%</div>
+    <div class="kpi-sub">48/50 solved (pass@8) · 96% learning zone</div>
+  </div>
+  <div class="card">
+    <div class="kpi-label">1.5B pass@1</div>
+    <div class="kpi-value model-1">62.6%</div>
+    <div class="kpi-sub">50/50 solved (pass@8) · 94% learning zone</div>
+  </div>
+  <div class="card">
+    <div class="kpi-label">3B pass@1</div>
+    <div class="kpi-value model-2">81.2%</div>
+    <div class="kpi-sub">50/50 solved (pass@8) · 72% learning zone</div>
+  </div>
+  <div class="card">
+    <div class="kpi-label">RL Headroom (1.5B)</div>
+    <div class="kpi-value" style="color:var(--yellow)">30.7pp</div>
+    <div class="kpi-sub">1.5B p@1 (62.6%) → 3B p@8 (95.0%)</div>
+  </div>
+</div>
+
+<!-- Pass@k scaling -->
+<div class="section">
+  <div class="section-label">Pass@k Scaling Curves</div>
+  <div class="card">
+    <div class="chart-wrap" style="height:260px">
+      <canvas id="scalingChart"></canvas>
+    </div>
+  </div>
+</div>
+
+<!-- Category breakdown x3 models -->
+<div class="section">
+  <div class="section-label">Category Pass@1 by Model</div>
+  <div class="card">
+    <div class="chart-wrap" style="height:280px">
+      <canvas id="catChart"></canvas>
+    </div>
+  </div>
+</div>
+
+<!-- GRPO variance by category x3 models + zone breakdown -->
+<div class="section grid-2">
+  <div class="card">
+    <div class="section-label">GRPO Variance by Category</div>
+    <div class="chart-wrap" style="height:240px">
+      <canvas id="grpoChart"></canvas>
+    </div>
+  </div>
+  <div class="card">
+    <div class="section-label">RL Zone Distribution by Model</div>
+    <div class="chart-wrap" style="height:240px">
+      <canvas id="zoneChart"></canvas>
+    </div>
+  </div>
+</div>
+
+<!-- Error type distribution -->
+<div class="section">
+  <div class="section-label">Error Type Distribution</div>
+  <div class="card">
+    <div class="chart-wrap" style="height:220px">
+      <canvas id="errorChart"></canvas>
+    </div>
+  </div>
+</div>
+
+<!-- Zone migration -->
+<div class="section">
+  <div class="section-label">Zone Migration (0.5B → 1.5B → 3B)</div>
+  <div class="grid-2">
+    <div class="card">
+      <h2>Trajectory Summary</h2>
+      <table>
+        <thead><tr><th>Trajectory</th><th class="num">Puzzles</th></tr></thead>
+        <tbody id="migrationTable"></tbody>
+      </table>
+    </div>
+    <div class="card">
+      <h2>Puzzles That Change Zone (17)</h2>
+      <div style="overflow-y:auto;max-height:240px">
+        <table>
+          <thead><tr><th>Puzzle</th><th>Path</th><th class="num">0.5B</th><th class="num">1.5B</th><th class="num">3B</th></tr></thead>
+          <tbody id="migrationPuzzles"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Top GRPO targets per model -->
+<div class="section">
+  <div class="section-label">Top RL Training Targets — Ranked by GRPO Variance</div>
+  <div class="grid-3">
+    <div class="card">
+      <h2 class="model-0">0.5B Targets</h2>
+      <table>
+        <thead><tr><th>Puzzle</th><th>Cat</th><th class="num">p@1</th><th class="num">GRPO</th></tr></thead>
+        <tbody id="targets05"></tbody>
+      </table>
+    </div>
+    <div class="card">
+      <h2 class="model-1">1.5B Targets</h2>
+      <table>
+        <thead><tr><th>Puzzle</th><th>Cat</th><th class="num">p@1</th><th class="num">GRPO</th></tr></thead>
+        <tbody id="targets15"></tbody>
+      </table>
+    </div>
+    <div class="card">
+      <h2 class="model-2">3B Targets</h2>
+      <table>
+        <thead><tr><th>Puzzle</th><th>Cat</th><th class="num">p@1</th><th class="num">GRPO</th></tr></thead>
+        <tbody id="targets3b"></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<!-- Hidden gap insight -->
+<div class="section">
+  <div class="section-label">Key Observations</div>
+  <div class="insight"><strong>Dataset is well-calibrated for 1.5B.</strong> pass@1 of 62.6% means 94% of puzzles are in the learning zone — near-ideal for GRPO training. The 30.7pp headroom to 3B pass@8 confirms RL can close this gap.</div>
+  <div class="insight"><strong>Large hidden test gap (vis − hid: +31.5% at 1.5B).</strong> The model passes visible tests but fails hidden ones — exactly the behaviour RL can fix by training on binary pass/fail rather than partial credit.</div>
+  <div class="insight"><strong>Logic & Simulation has the best GRPO signal at 1.5B (0.203).</strong> Strings is second (0.201). Lists & Arrays is weakest (0.156) — many already saturated at 1.5B.</div>
+  <div class="insight"><strong>17 puzzles change zone across model sizes.</strong> 12 go <em>learning → learning → saturated</em> — these are the "sweet spot" puzzles that are still useful at 1.5B but solved by 3B. 2 go <em>dead → learning → learning</em> (gear_ratio, number_to_english) — hard even for 3B, good curriculum challenges.</div>
+  <div class="insight"><strong>0.5B: 40% wrong answers, 18% runtime errors.</strong> Moving to 1.5B cuts runtime errors to 2% — the model learns basic syntax but still misunderstands logic. This is the most RL-trainable failure mode.</div>
+</div>
+
+<script>
+const C = {
+  red:'#f87171', blue:'#60a5fa', green:'#4ade80',
+  yellow:'#facc15', orange:'#fb923c', purple:'#a78bfa',
+  cyan:'#22d3ee', text2:'#8b8fa3', border:'#2a2f47', surface2:'#1e2235',
+};
+Chart.defaults.color = C.text2;
+Chart.defaults.borderColor = C.border;
+Chart.defaults.font.family = "'Inter',system-ui,sans-serif";
+Chart.defaults.font.size = 12;
+
+// ── Pass@k scaling ──
+new Chart(document.getElementById('scalingChart'), {
+  type: 'line',
+  data: {
+    labels: [1, 2, 4, 8],
+    datasets: [
+      { label: '0.5B', data: [36.75, 51.43, 65.04, 77.0],
+        borderColor: C.red, backgroundColor: C.red+'33', pointRadius: 5, borderWidth: 2.5, tension: 0.3 },
+      { label: '1.5B', data: [62.62, 77.32, 87.39, 93.0],
+        borderColor: C.blue, backgroundColor: C.blue+'33', pointRadius: 5, borderWidth: 2.5, tension: 0.3 },
+      { label: '3B',   data: [81.25, 88.39, 92.17, 95.0],
+        borderColor: C.green, backgroundColor: C.green+'33', pointRadius: 5, borderWidth: 2.5, tension: 0.3 },
+    ]
+  },
+  options: {
+    responsive: true, maintainAspectRatio: false,
+    scales: {
+      x: { title: { display: true, text: 'k (attempts)' }, grid: { color: C.border } },
+      y: { min: 0, max: 100, title: { display: true, text: 'pass@k (%)' },
+           grid: { color: C.border }, ticks: { callback: v => v+'%' } },
+    },
+    plugins: {
+      legend: { labels: { usePointStyle: true, pointStyleWidth: 10, padding: 20 } },
+      tooltip: { callbacks: { label: ctx => ` ${ctx.dataset.label}: ${ctx.parsed.y.toFixed(1)}%` } },
+    },
+  }
+});
+
+// ── Category pass@1 by model ──
+const cats = ['Basic Math','Dicts & Sets','Lists & Arrays','Logic & Sim','Search & Sort','Strings'];
+const catData = {
+  '0.5B': [33, 33, 48, 25, 42, 39],
+  '1.5B': [53, 66, 76, 50, 68, 63],
+  '3B':   [71, 79, 89, 65, 88, 90],
+};
+new Chart(document.getElementById('catChart'), {
+  type: 'bar',
+  data: {
+    labels: cats,
+    datasets: [
+      { label: '0.5B', data: catData['0.5B'], backgroundColor: C.red+'cc', borderRadius: 4, barPercentage: 0.75 },
+      { label: '1.5B', data: catData['1.5B'], backgroundColor: C.blue+'cc', borderRadius: 4, barPercentage: 0.75 },
+      { label: '3B',   data: catData['3B'],   backgroundColor: C.green+'cc', borderRadius: 4, barPercentage: 0.75 },
+    ]
+  },
+  options: {
+    responsive: true, maintainAspectRatio: false,
+    scales: {
+      x: { grid: { display: false } },
+      y: { min: 0, max: 100, grid: { color: C.border }, ticks: { callback: v => v+'%' } },
+    },
+    plugins: {
+      legend: { labels: { usePointStyle: true, pointStyleWidth: 10, padding: 16 } },
+      tooltip: { callbacks: { label: ctx => ` ${ctx.dataset.label}: ${ctx.parsed.y}%` } },
+    },
+  }
+});
+
+// ── GRPO variance by category ──
+const grpoData = {
+  '0.5B': [0.159, 0.191, 0.187, 0.166, 0.194, 0.202],
+  '1.5B': [0.171, 0.190, 0.156, 0.203, 0.172, 0.201],
+  '3B':   [0.119, 0.131, 0.073, 0.169, 0.088, 0.078],
+};
+new Chart(document.getElementById('grpoChart'), {
+  type: 'bar',
+  data: {
+    labels: cats,
+    datasets: [
+      { label: '0.5B', data: grpoData['0.5B'], backgroundColor: C.red+'cc', borderRadius: 3, barPercentage: 0.75 },
+      { label: '1.5B', data: grpoData['1.5B'], backgroundColor: C.blue+'cc', borderRadius: 3, barPercentage: 0.75 },
+      { label: '3B',   data: grpoData['3B'],   backgroundColor: C.green+'cc', borderRadius: 3, barPercentage: 0.75 },
+    ]
+  },
+  options: {
+    responsive: true, maintainAspectRatio: false,
+    scales: {
+      x: { grid: { display: false } },
+      y: { max: 0.27, grid: { color: C.border },
+           ticks: { callback: v => v.toFixed(2) },
+           title: { display: true, text: 'p*(1-p)' } },
+    },
+    plugins: {
+      annotation: {},
+      legend: { labels: { usePointStyle: true, pointStyleWidth: 10, padding: 16 } },
+      tooltip: { callbacks: { label: ctx => ` ${ctx.dataset.label}: ${ctx.parsed.y.toFixed(3)}` } },
+    },
+  }
+});
+
+// ── Zone distribution ──
+new Chart(document.getElementById('zoneChart'), {
+  type: 'bar',
+  data: {
+    labels: ['0.5B', '1.5B', '3B'],
+    datasets: [
+      { label: 'Learning', data: [48, 47, 36], backgroundColor: C.green+'cc', borderRadius: 4 },
+      { label: 'Saturated', data: [0, 3, 14], backgroundColor: C.text2+'99', borderRadius: 4 },
+      { label: 'Dead', data: [2, 0, 0], backgroundColor: C.red+'cc', borderRadius: 4 },
+    ]
+  },
+  options: {
+    responsive: true, maintainAspectRatio: false,
+    scales: {
+      x: { stacked: true, grid: { display: false } },
+      y: { stacked: true, max: 55, grid: { color: C.border } },
+    },
+    plugins: {
+      legend: { labels: { usePointStyle: true, pointStyleWidth: 10, padding: 16 } },
+    },
+  }
+});
+
+// ── Error types ──
+const errorLabels = ['Full Pass','Wrong Answer','Runtime Error','Partial Pass','Timeout','Syntax Error'];
+new Chart(document.getElementById('errorChart'), {
+  type: 'bar',
+  data: {
+    labels: errorLabels,
+    datasets: [
+      { label: '0.5B', data: [37, 40, 18, 4, 1, 1], backgroundColor: C.red+'cc', borderRadius: 4, barPercentage: 0.75 },
+      { label: '1.5B', data: [63, 29,  2, 4, 1, 1], backgroundColor: C.blue+'cc', borderRadius: 4, barPercentage: 0.75 },
+      { label: '3B',   data: [81, 12,  2, 4, 1, 0], backgroundColor: C.green+'cc', borderRadius: 4, barPercentage: 0.75 },
+    ]
+  },
+  options: {
+    responsive: true, maintainAspectRatio: false, indexAxis: 'y',
+    scales: {
+      x: { grid: { color: C.border }, ticks: { callback: v => v+'%' }, max: 90 },
+      y: { grid: { display: false } },
+    },
+    plugins: {
+      legend: { labels: { usePointStyle: true, pointStyleWidth: 10, padding: 16 } },
+      tooltip: { callbacks: { label: ctx => ` ${ctx.dataset.label}: ${ctx.parsed.x}%` } },
+    },
+  }
+});
+
+// ── Zone migration table ──
+const migrations = [
+  ['learning → learning → learning', 33],
+  ['learning → learning → saturated', 12],
+  ['learning → saturated → saturated', 2],
+  ['dead → learning → learning', 2],
+  ['learning → saturated → learning', 1],
+];
+const migTbody = document.getElementById('migrationTable');
+migrations.forEach(([traj, n]) => {
+  const color = traj.includes('saturated') ? C.text2 : traj.includes('dead') ? C.orange : C.green;
+  migTbody.innerHTML += `<tr>
+    <td style="font-size:0.78rem;color:${color}">${traj}</td>
+    <td class="num" style="font-weight:600">${n}</td>
+  </tr>`;
+});
+
+// ── Migration puzzle table ──
+const migPuzzles = [
+  ['binary_search_dictionary_lookup', 'learning→sat→sat', 88, 100, 100],
+  ['caesar_cipher_encrypt',           'learn→learn→sat',  56,  75, 100],
+  ['chunk_into_batches',              'learn→learn→sat',  75,  94, 100],
+  ['classify_primes',                 'learn→learn→sat',  50,  69, 100],
+  ['common_friends_finder',           'learn→learn→sat',  56,  75, 100],
+  ['election_winner',                 'learn→learn→sat',  38,  69, 100],
+  ['filter_words_by_vowel_count',     'learn→learn→sat',  31,  50, 100],
+  ['find_logs_by_keyword',            'learn→learn→sat',  50,  69, 100],
+  ['flatten_json_values',             'learn→sat→learn',  69, 100,  88],
+  ['gear_ratio_simplifier',           'dead→learn→learn',  0,  44,  50],
+  ['group_students_by_grade',         'learn→learn→sat',  44,  94, 100],
+  ['normalize_names_title_case',      'learn→learn→sat',  31,  88, 100],
+  ['number_to_english_words',         'dead→learn→learn',  0,   6,  12],
+  ['partition_data_buckets',          'learn→learn→sat',  56,  75, 100],
+  ['permutation_count',               'learn→learn→sat',  69,  94, 100],
+  ['reverse_word_decoder',            'learn→sat→sat',    69, 100, 100],
+  ['rotate_circular_buffer',          'learn→learn→sat',  25,  44, 100],
+];
+const migPBody = document.getElementById('migrationPuzzles');
+migPuzzles.forEach(([id, path, p05, p15, p3]) => {
+  const color = path.includes('dead') ? C.orange : path.includes('sat→sat') ? C.text2 : C.text;
+  migPBody.innerHTML += `<tr>
+    <td style="font-size:0.75rem">${id.replace(/_/g,' ')}</td>
+    <td style="font-size:0.72rem;color:${color};white-space:nowrap">${path}</td>
+    <td class="num" style="color:${C.red};font-size:0.78rem">${p05}%</td>
+    <td class="num" style="color:${C.blue};font-size:0.78rem">${p15}%</td>
+    <td class="num" style="color:${C.green};font-size:0.78rem">${p3}%</td>
+  </tr>`;
+});
+
+// ── RL targets per model ──
+const targets = {
+  '05': [
+    ['most_frequent_character','Strings',50,0.250],
+    ['find_logs_by_keyword','Strings',50,0.250],
+    ['receipt_pair_matching','Dicts',50,0.250],
+    ['classify_primes','Math',50,0.250],
+    ['checksum_digit_sum_filter','Math',50,0.250],
+    ['log_level_counter','Strings',50,0.250],
+    ['silver_medal_score','Lists',50,0.250],
+    ['invert_lookup_table','Dicts',50,0.250],
+    ['group_students_by_grade','Dicts',44,0.246],
+    ['rabbit_population_fibonacci','Math',44,0.246],
+  ],
+  '15': [
+    ['palindrome_word_finder','Strings',50,0.250],
+    ['receipt_pair_matching','Dicts',50,0.250],
+    ['calendar_day_labeler','Logic',50,0.250],
+    ['filter_words_by_vowel_count','Strings',50,0.250],
+    ['run_length_encode','Strings',50,0.250],
+    ['grade_distribution_counting_sort','Sort',50,0.250],
+    ['rotate_circular_buffer','Lists',44,0.246],
+    ['book_word_cloud','Dicts',44,0.246],
+    ['rabbit_population_fibonacci','Math',56,0.246],
+    ['log_level_counter','Strings',56,0.246],
+  ],
+  '3b': [
+    ['receipt_pair_matching','Dicts',50,0.250],
+    ['calendar_day_labeler','Logic',50,0.250],
+    ['transpose_spreadsheet','Logic',50,0.250],
+    ['stock_moving_average','Lists',50,0.250],
+    ['gear_ratio_simplifier','Math',50,0.250],
+    ['invert_lookup_table','Dicts',56,0.246],
+    ['simple_add_subtract_calculator','Logic',44,0.246],
+    ['stream_first_non_repeating','Dicts',62,0.234],
+    ['grade_distribution_counting_sort','Sort',62,0.234],
+    ['rabbit_population_fibonacci','Math',69,0.215],
+  ],
+};
+
+function grpoColor(v) {
+  if (v >= 0.245) return C.green;
+  if (v >= 0.22) return C.yellow;
+  return C.orange;
+}
+
+function renderTargets(tbodyId, rows) {
+  const tbody = document.getElementById(tbodyId);
+  rows.forEach(([id, cat, p1, grpo]) => {
+    const pct = Math.round(grpo / 0.25 * 100);
+    tbody.innerHTML += `<tr>
+      <td style="font-size:0.75rem">${id.replace(/_/g,' ')}</td>
+      <td style="font-size:0.7rem;color:${C.text2}">${cat}</td>
+      <td class="num">${p1}%</td>
+      <td class="num" style="color:${grpoColor(grpo)};font-weight:600">${grpo.toFixed(3)}</td>
+    </tr>`;
+  });
+}
+renderTargets('targets05', targets['05']);
+renderTargets('targets15', targets['15']);
+renderTargets('targets3b', targets['3b']);
+</script>
+</body>
+</html>
